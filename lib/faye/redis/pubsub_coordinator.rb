@@ -13,6 +13,8 @@ module Faye
         @redis_subscriber = nil
         @subscribed_channels = Set.new
         @subscriber_thread = nil
+        @stop_subscriber = false
+        @reconnect_attempts = 0
         # Don't setup subscriber immediately - wait until first publish/subscribe
       end
 
@@ -66,6 +68,8 @@ module Faye
 
       # Disconnect the pub/sub connection
       def disconnect
+        @stop_subscriber = true
+
         if @subscriber_thread
           @subscriber_thread.kill
           @subscriber_thread = nil
@@ -88,14 +92,30 @@ module Faye
       def setup_subscriber
         return if @subscriber_thread&.alive?
 
-        # Create a dedicated Redis connection for pub/sub
-        @redis_subscriber = @connection.create_pubsub_connection
-
-        # Subscribe to a wildcard pattern to catch all Faye messages
-        pattern = pubsub_channel('*')
-
+        @stop_subscriber = false
         @subscriber_thread = Thread.new do
+          run_subscriber_loop
+        end
+      rescue => e
+        log_error("Failed to setup pub/sub subscriber: #{e.message}")
+      end
+
+      def run_subscriber_loop
+        max_reconnect_attempts = @options[:pubsub_max_reconnect_attempts] || 10
+        base_delay = @options[:pubsub_reconnect_delay] || 1
+
+        loop do
+          break if @stop_subscriber
+
           begin
+            # Create a dedicated Redis connection for pub/sub
+            @redis_subscriber = @connection.create_pubsub_connection
+
+            # Subscribe to a wildcard pattern to catch all Faye messages
+            pattern = pubsub_channel('*')
+
+            log_info("Starting pub/sub subscriber (attempt #{@reconnect_attempts + 1})")
+
             @redis_subscriber.psubscribe(pattern) do |on|
               on.pmessage do |pattern_match, channel, message|
                 handle_message(channel, message)
@@ -103,6 +123,7 @@ module Faye
 
               on.psubscribe do |channel, subscriptions|
                 log_info("Subscribed to pattern: #{channel}")
+                @reconnect_attempts = 0 # Reset on successful subscription
               end
 
               on.punsubscribe do |channel, subscriptions|
@@ -110,12 +131,32 @@ module Faye
               end
             end
           rescue => e
-            log_error("Pub/sub subscriber error: #{e.message}")
-            # Don't retry automatically - let it fail
+            break if @stop_subscriber
+
+            @reconnect_attempts += 1
+            log_error("Pub/sub subscriber error: #{e.message} (attempt #{@reconnect_attempts})")
+
+            # Clean up failed connection
+            begin
+              @redis_subscriber&.quit
+            rescue
+              # Ignore cleanup errors
+            end
+            @redis_subscriber = nil
+
+            if @reconnect_attempts >= max_reconnect_attempts
+              log_error("Max reconnect attempts (#{max_reconnect_attempts}) reached, stopping pub/sub subscriber")
+              break
+            end
+
+            # Exponential backoff with jitter
+            delay = [base_delay * (2 ** (@reconnect_attempts - 1)), 60].min
+            jitter = rand * 0.3 * delay
+            sleep(delay + jitter)
+
+            log_info("Attempting to reconnect pub/sub subscriber...")
           end
         end
-      rescue => e
-        log_error("Failed to setup pub/sub subscriber: #{e.message}")
       end
 
       def handle_message(redis_channel, message_json)

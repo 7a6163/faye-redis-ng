@@ -43,6 +43,38 @@ RSpec.describe Faye::Redis do
       end
     end
 
+    it 'generates UUID format client IDs' do
+      em_run do
+        engine.create_client do |client_id|
+          # UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+          uuid_pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+          expect(client_id).to match(uuid_pattern)
+          EM.stop
+        end
+      end
+    end
+
+    it 'generates unique client IDs' do
+      em_run do
+        client_ids = []
+
+        engine.create_client do |client_id1|
+          client_ids << client_id1
+
+          engine.create_client do |client_id2|
+            client_ids << client_id2
+
+            engine.create_client do |client_id3|
+              client_ids << client_id3
+
+              expect(client_ids.uniq.length).to eq(3)
+              EM.stop
+            end
+          end
+        end
+      end
+    end
+
     it 'registers client in registry' do
       em_run do
         engine.create_client do |client_id|
@@ -171,6 +203,44 @@ RSpec.describe Faye::Redis do
       end
     end
 
+    it 'calls callback with success status' do
+      em_run(2) do
+        engine.create_client do |client_id|
+          engine.subscribe(client_id, '/messages') do
+            message = {
+              'channel' => '/messages',
+              'data' => { 'text' => 'Hello' }
+            }
+
+            callback_called = false
+            engine.publish(message, '/messages') do |success|
+              callback_called = true
+              expect(success).to be true
+            end
+
+            EM.add_timer(0.5) do
+              expect(callback_called).to be true
+              EM.stop
+            end
+          end
+        end
+      end
+    end
+
+    it 'handles publish errors in callback' do
+      em_run do
+        # Disconnect to cause error
+        engine.connection.disconnect
+
+        message = { 'data' => { 'text' => 'Test' } }
+
+        engine.publish(message, '/messages') do |success|
+          expect(success).to be false
+          EM.stop
+        end
+      end
+    end
+
     it 'handles multiple channels' do
       em_run(2) do
         engine.create_client do |client_id|
@@ -185,6 +255,26 @@ RSpec.describe Faye::Redis do
                   expect(size).to be >= 2
                   EM.stop
                 end
+              end
+            end
+          end
+        end
+      end
+    end
+
+    it 'works without callback (backward compatible)' do
+      em_run(2) do
+        engine.create_client do |client_id|
+          engine.subscribe(client_id, '/messages') do
+            message = { 'channel' => '/messages', 'data' => { 'text' => 'Test' } }
+
+            # Should not raise error when called without callback
+            expect { engine.publish(message, '/messages') }.not_to raise_error
+
+            EM.add_timer(0.5) do
+              engine.message_queue.size(client_id) do |size|
+                expect(size).to be > 0
+                EM.stop
               end
             end
           end
@@ -222,7 +312,7 @@ RSpec.describe Faye::Redis do
   describe '#disconnect' do
     it 'disconnects all components' do
       engine.disconnect
-      expect { engine.connection.ping }.to raise_error
+      expect { engine.connection.ping }.to raise_error(ConnectionPool::PoolShuttingDownError)
     end
   end
 end

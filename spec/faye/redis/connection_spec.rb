@@ -66,7 +66,7 @@ RSpec.describe Faye::Redis::Connection do
   describe '#disconnect' do
     it 'closes all connections in the pool' do
       connection.disconnect
-      expect { connection.ping }.to raise_error
+      expect { connection.ping }.to raise_error(ConnectionPool::PoolShuttingDownError)
     end
   end
 
@@ -83,6 +83,29 @@ RSpec.describe Faye::Redis::Connection do
       expect(call_count).to be >= 2
     end
 
+    it 'retries on CannotConnectError' do
+      call_count = 0
+      allow_any_instance_of(::Redis).to receive(:ping) do
+        call_count += 1
+        raise ::Redis::CannotConnectError if call_count == 1
+        'PONG'
+      end
+
+      expect(connection.ping).to eq('PONG')
+      expect(call_count).to be >= 2
+    end
+
+    it 'handles CannotConnectError in connected?' do
+      bad_connection = described_class.new(
+        host: 'nonexistent.invalid',
+        port: 9999,
+        connect_timeout: 0.1,
+        max_retries: 1,
+        retry_delay: 0.01
+      )
+      expect(bad_connection.connected?).to be false
+    end
+
     it 'raises error after max retries' do
       conn = described_class.new(options.merge(max_retries: 2, retry_delay: 0.01))
 
@@ -92,6 +115,24 @@ RSpec.describe Faye::Redis::Connection do
       expect {
         conn.with_redis { |redis| redis.get('key') }
       }.to raise_error(Faye::Redis::Connection::ConnectionError)
+    end
+
+    it 'uses exponential backoff for retries' do
+      conn = described_class.new(options.merge(max_retries: 3, retry_delay: 0.1))
+      call_count = 0
+
+      allow_any_instance_of(Redis).to receive(:get) do
+        call_count += 1
+        raise Redis::TimeoutError if call_count < 3
+        'success'
+      end
+
+      start_time = Time.now
+      conn.with_redis { |redis| redis.get('key') }
+      elapsed = Time.now - start_time
+
+      # Should have delays: 0.1s, 0.2s = 0.3s total minimum
+      expect(elapsed).to be >= 0.3
     end
   end
 

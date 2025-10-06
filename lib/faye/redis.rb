@@ -1,4 +1,6 @@
+require 'securerandom'
 require_relative 'redis/version'
+require_relative 'redis/logger'
 require_relative 'redis/connection'
 require_relative 'redis/client_registry'
 require_relative 'redis/subscription_manager'
@@ -36,6 +38,7 @@ module Faye
     def initialize(server, options = {})
       @server = server
       @options = DEFAULT_OPTIONS.merge(options)
+      @logger = Logger.new('Faye::Redis', @options)
 
       # Initialize components
       @connection = Connection.new(@options)
@@ -88,19 +91,31 @@ module Faye
     end
 
     # Publish a message to channels
-    def publish(message, channels)
+    def publish(message, channels, &callback)
       channels = [channels] unless channels.is_a?(Array)
+      success = true
 
-      channels.each do |channel|
-        # Store message in queues for subscribed clients
-        @subscription_manager.get_subscribers(channel) do |client_ids|
-          client_ids.each do |client_id|
-            @message_queue.enqueue(client_id, message)
+      begin
+        channels.each do |channel|
+          # Store message in queues for subscribed clients
+          @subscription_manager.get_subscribers(channel) do |client_ids|
+            client_ids.each do |client_id|
+              @message_queue.enqueue(client_id, message) do |enqueued|
+                success &&= enqueued
+              end
+            end
+          end
+
+          # Publish to Redis pub/sub for cross-server routing
+          @pubsub_coordinator.publish(channel, message) do |published|
+            success &&= published
           end
         end
 
-        # Publish to Redis pub/sub for cross-server routing
-        @pubsub_coordinator.publish(channel, message)
+        EventMachine.next_tick { callback.call(success) } if callback
+      rescue => e
+        log_error("Failed to publish message to channels #{channels}: #{e.message}")
+        EventMachine.next_tick { callback.call(false) } if callback
       end
     end
 
@@ -118,7 +133,7 @@ module Faye
     private
 
     def generate_client_id
-      "#{Time.now.to_i}#{rand(1000000)}"
+      SecureRandom.uuid
     end
 
     def setup_message_routing
@@ -130,6 +145,10 @@ module Faye
           end
         end
       end
+    end
+
+    def log_error(message)
+      @logger.error(message)
     end
   end
 end

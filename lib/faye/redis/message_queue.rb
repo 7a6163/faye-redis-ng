@@ -1,4 +1,5 @@
 require 'json'
+require 'securerandom'
 
 module Faye
   class Redis
@@ -52,20 +53,46 @@ module Faye
           redis.lrange(queue_key(client_id), 0, -1)
         end
 
-        # Fetch all messages
-        messages = message_ids.map do |message_id|
-          fetch_message(message_id)
-        end.compact
+        # Fetch all messages using pipeline
+        messages = []
+        unless message_ids.empty?
+          @connection.with_redis do |redis|
+            redis.pipelined do |pipeline|
+              message_ids.each do |message_id|
+                pipeline.hgetall(message_key(message_id))
+              end
+            end.each do |data|
+              next if data.nil? || data.empty?
 
-        # Clear the queue
-        @connection.with_redis do |redis|
-          redis.del(queue_key(client_id))
+              # Parse JSON values
+              parsed_data = data.transform_values do |v|
+                begin
+                  JSON.parse(v)
+                rescue JSON::ParserError
+                  v
+                end
+              end
+
+              # Convert to Faye message format
+              messages << {
+                'channel' => parsed_data['channel'],
+                'data' => parsed_data['data'],
+                'clientId' => parsed_data['client_id'],
+                'id' => parsed_data['id']
+              }
+            end
+          end
         end
 
-        # Delete message data
-        message_ids.each do |message_id|
+        # Delete queue and all message data using pipeline
+        unless message_ids.empty?
           @connection.with_redis do |redis|
-            redis.del(message_key(message_id))
+            redis.pipelined do |pipeline|
+              pipeline.del(queue_key(client_id))
+              message_ids.each do |message_id|
+                pipeline.del(message_key(message_id))
+              end
+            end
           end
         end
 
@@ -169,7 +196,7 @@ module Faye
       end
 
       def generate_message_id
-        "msg_#{Time.now.to_i}_#{rand(1000000)}"
+        SecureRandom.uuid
       end
 
       def log_error(message)

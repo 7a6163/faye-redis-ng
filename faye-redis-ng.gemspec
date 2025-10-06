@@ -1,6 +1,6 @@
 Gem::Specification.new do |s|
   s.name        = 'faye-redis-ng'
-  s.version     = '0.1.0'
+  s.version     = '1.0.0'
   s.summary     = 'Redis backend for Faye'
   s.description = 'A Redis-based backend engine for Faye messaging server, allowing distribution across multiple web servers'
   s.authors     = ['Zac']

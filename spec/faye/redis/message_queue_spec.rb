@@ -25,6 +25,35 @@ RSpec.describe Faye::Redis::MessageQueue do
       end
     end
 
+    it 'generates UUID format message IDs' do
+      em_run do
+        queue.enqueue('client-1', message) do
+          queue.dequeue_all('client-1') do |messages|
+            message_id = messages.first['id']
+            uuid_pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+            expect(message_id).to match(uuid_pattern)
+            EM.stop
+          end
+        end
+      end
+    end
+
+    it 'generates unique message IDs' do
+      em_run do
+        queue.enqueue('client-1', message) do
+          queue.enqueue('client-1', message) do
+            queue.enqueue('client-1', message) do
+              queue.dequeue_all('client-1') do |messages|
+                ids = messages.map { |m| m['id'] }
+                expect(ids.uniq.length).to eq(3)
+                EM.stop
+              end
+            end
+          end
+        end
+      end
+    end
+
     it 'stores message data' do
       em_run do
         queue.enqueue('client-1', message) do
@@ -32,6 +61,18 @@ RSpec.describe Faye::Redis::MessageQueue do
             expect(size).to eq(1)
             EM.stop
           end
+        end
+      end
+    end
+
+    it 'handles enqueue errors gracefully' do
+      em_run do
+        # Disconnect to cause error
+        connection.disconnect
+
+        queue.enqueue('client-1', message) do |success|
+          expect(success).to be false
+          EM.stop
         end
       end
     end
@@ -46,6 +87,27 @@ RSpec.describe Faye::Redis::MessageQueue do
             expect(messages.first['channel']).to eq('/messages')
             expect(messages.first['data']).to eq({ 'text' => 'Hello, World!' })
             EM.stop
+          end
+        end
+      end
+    end
+
+    it 'efficiently dequeues multiple messages using pipeline' do
+      em_run do
+        # Enqueue multiple messages
+        queue.enqueue('client-1', message) do
+          queue.enqueue('client-1', message) do
+            queue.enqueue('client-1', message) do
+              queue.enqueue('client-1', message) do
+                queue.enqueue('client-1', message) do
+                  # Dequeue all at once
+                  queue.dequeue_all('client-1') do |messages|
+                    expect(messages.size).to eq(5)
+                    EM.stop
+                  end
+                end
+              end
+            end
           end
         end
       end
@@ -68,6 +130,38 @@ RSpec.describe Faye::Redis::MessageQueue do
       em_run do
         queue.dequeue_all('client-1') do |messages|
           expect(messages).to eq([])
+          EM.stop
+        end
+      end
+    end
+
+    it 'handles dequeue errors gracefully' do
+      em_run do
+        queue.enqueue('client-1', message) do
+          # Disconnect to cause error
+          connection.disconnect
+
+          queue.dequeue_all('client-1') do |messages|
+            expect(messages).to eq([])
+            EM.stop
+          end
+        end
+      end
+    end
+
+    it 'handles JSON parse errors in message data' do
+      em_run do
+        # Manually insert malformed data to test error handling
+        connection_new = Faye::Redis::Connection.new(test_redis_options)
+
+        connection_new.with_redis do |redis|
+          redis.rpush('test:messages:client-1', 'bad-message-id')
+          redis.hset('test:message:bad-message-id', 'data', 'invalid json')
+        end
+
+        queue.dequeue_all('client-1') do |messages|
+          # Should handle parse error gracefully
+          connection_new.disconnect
           EM.stop
         end
       end
