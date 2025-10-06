@@ -198,6 +198,27 @@ RSpec.describe Faye::Redis::MessageQueue do
         end
       end
     end
+
+    it 'handles peek errors gracefully' do
+      em_run do
+        # Disconnect to cause error
+        connection.disconnect
+
+        queue.peek('client-1') do |messages|
+          expect(messages).to eq([])
+          EM.stop
+        end
+      end
+    end
+
+    it 'returns empty array when peeking empty queue' do
+      em_run do
+        queue.peek('client-1') do |messages|
+          expect(messages).to eq([])
+          EM.stop
+        end
+      end
+    end
   end
 
   describe '#size' do
@@ -222,6 +243,18 @@ RSpec.describe Faye::Redis::MessageQueue do
         end
       end
     end
+
+    it 'handles size errors gracefully' do
+      em_run do
+        # Disconnect to cause error
+        connection.disconnect
+
+        queue.size('client-1') do |size|
+          expect(size).to eq(0)
+          EM.stop
+        end
+      end
+    end
   end
 
   describe '#clear' do
@@ -238,6 +271,18 @@ RSpec.describe Faye::Redis::MessageQueue do
               end
             end
           end
+        end
+      end
+    end
+
+    it 'handles clear errors gracefully' do
+      em_run do
+        # Disconnect to cause error
+        connection.disconnect
+
+        queue.clear('client-1') do |success|
+          expect(success).to be false
+          EM.stop
         end
       end
     end

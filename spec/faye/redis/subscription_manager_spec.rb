@@ -201,4 +201,158 @@ RSpec.describe Faye::Redis::SubscriptionManager do
       end
     end
   end
+
+  describe 'wildcard pattern storage' do
+    it 'stores wildcard patterns in patterns set' do
+      em_run do
+        manager.subscribe('client-1', '/chat/*') do
+          # Verify pattern was stored
+          connection.with_redis do |redis|
+            patterns = redis.smembers('test:patterns')
+            expect(patterns).to include('/chat/*')
+          end
+          EM.stop
+        end
+      end
+    end
+
+    it 'does not store non-wildcard channels in patterns set' do
+      em_run do
+        manager.subscribe('client-1', '/messages') do
+          connection.with_redis do |redis|
+            patterns = redis.smembers('test:patterns')
+            expect(patterns).not_to include('/messages')
+          end
+          EM.stop
+        end
+      end
+    end
+
+    it 'cleans up wildcard pattern when last subscriber unsubscribes' do
+      em_run do
+        manager.subscribe('client-1', '/chat/*') do
+          manager.subscribe('client-2', '/chat/*') do
+            # Unsubscribe first client
+            manager.unsubscribe('client-1', '/chat/*') do
+              # Pattern should still exist
+              connection.with_redis do |redis|
+                patterns = redis.smembers('test:patterns')
+                expect(patterns).to include('/chat/*')
+              end
+
+              # Unsubscribe last client
+              manager.unsubscribe('client-2', '/chat/*') do
+                # Pattern should be removed
+                connection.with_redis do |redis|
+                  patterns = redis.smembers('test:patterns')
+                  expect(patterns).not_to include('/chat/*')
+                end
+                EM.stop
+              end
+            end
+          end
+        end
+      end
+    end
+
+    it 'keeps pattern when unsubscribing if other subscribers exist' do
+      em_run do
+        manager.subscribe('client-1', '/news/**') do
+          manager.subscribe('client-2', '/news/**') do
+            manager.unsubscribe('client-1', '/news/**') do
+              # Pattern should still exist
+              connection.with_redis do |redis|
+                patterns = redis.smembers('test:patterns')
+                expect(patterns).to include('/news/**')
+              end
+              EM.stop
+            end
+          end
+        end
+      end
+    end
+  end
+
+  describe 'error handling' do
+    it 'handles subscribe errors gracefully' do
+      em_run do
+        # Disconnect to cause error
+        connection.disconnect
+
+        manager.subscribe('client-1', '/messages') do |success|
+          expect(success).to be false
+          EM.stop
+        end
+      end
+    end
+
+    it 'handles unsubscribe errors gracefully' do
+      em_run do
+        # Disconnect to cause error
+        connection.disconnect
+
+        manager.unsubscribe('client-1', '/messages') do |success|
+          expect(success).to be false
+          EM.stop
+        end
+      end
+    end
+
+    it 'handles get_client_subscriptions errors gracefully' do
+      em_run do
+        # Disconnect to cause error
+        connection.disconnect
+
+        manager.get_client_subscriptions('client-1') do |channels|
+          expect(channels).to eq([])
+          EM.stop
+        end
+      end
+    end
+
+    it 'handles get_subscribers errors gracefully' do
+      em_run do
+        # Disconnect to cause error
+        connection.disconnect
+
+        manager.get_subscribers('/messages') do |clients|
+          expect(clients).to eq([])
+          EM.stop
+        end
+      end
+    end
+
+    it 'handles get_pattern_subscribers errors gracefully' do
+      # Disconnect to cause error
+      connection.disconnect
+
+      clients = manager.get_pattern_subscribers('/chat/room1')
+      expect(clients).to eq([])
+    end
+
+    it 'handles unsubscribe_all with no subscriptions' do
+      em_run do
+        manager.unsubscribe_all('client-with-no-subs') do |success|
+          expect(success).to be true
+          EM.stop
+        end
+      end
+    end
+
+    it 'handles unsubscribe_all errors gracefully' do
+      em_run do
+        manager.subscribe('client-1', '/messages') do
+          # Disconnect to cause error on unsubscribe_all
+          connection.disconnect
+
+          manager.unsubscribe_all('client-1') do |success|
+            # Even with disconnected connection, unsubscribe_all handles the error
+            # by getting empty subscriptions and returning success
+            expect(success).to be true
+            EM.stop
+          end
+        end
+      end
+    end
+  end
 end

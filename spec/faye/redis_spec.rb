@@ -334,4 +334,31 @@ RSpec.describe Faye::Redis do
       engine.send(:log_error, 'test error')
     end
   end
+
+  describe 'private methods' do
+    it 'generates client IDs using generate_client_id' do
+      client_id = engine.send(:generate_client_id)
+      uuid_pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+      expect(client_id).to match(uuid_pattern)
+    end
+
+    it 'sets up message routing in setup_message_routing' do
+      expect(engine.pubsub_coordinator.instance_variable_get(:@subscribers)).not_to be_empty
+    end
+  end
+
+  describe '#publish with exceptions' do
+    it 'handles exceptions during publish' do
+      em_run do
+        # Mock to raise exception
+        allow(engine.subscription_manager).to receive(:get_subscribers).and_raise(StandardError.new('test error'))
+
+        message = { 'data' => 'test' }
+        engine.publish(message, '/test') do |success|
+          expect(success).to be false
+          EM.stop
+        end
+      end
+    end
+  end
 end

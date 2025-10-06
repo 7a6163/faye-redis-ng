@@ -56,6 +56,11 @@ module Faye
           end
         end
 
+        # Clean up wildcard pattern if no more subscribers
+        if channel.include?('*')
+          cleanup_pattern_if_unused(channel)
+        end
+
         EventMachine.next_tick { callback.call(true) } if callback
       rescue => e
         log_error("Failed to unsubscribe client #{client_id} from #{channel}: #{e.message}")
@@ -159,6 +164,20 @@ module Faye
       end
 
       private
+
+      def cleanup_pattern_if_unused(pattern)
+        subscribers = @connection.with_redis do |redis|
+          redis.smembers(channel_subscribers_key(pattern))
+        end
+
+        if subscribers.empty?
+          @connection.with_redis do |redis|
+            redis.srem(patterns_key, pattern)
+          end
+        end
+      rescue => e
+        log_error("Failed to cleanup pattern #{pattern}: #{e.message}")
+      end
 
       def client_subscriptions_key(client_id)
         namespace_key("subscriptions:#{client_id}")

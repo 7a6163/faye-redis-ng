@@ -110,14 +110,43 @@ module Faye
       end
 
       # Clean up expired clients
-      def cleanup_expired
+      def cleanup_expired(&callback)
         all do |client_ids|
-          client_ids.each do |client_id|
-            exists?(client_id) do |exists|
-              destroy(client_id) unless exists
+          # Check existence in batch using pipelined commands
+          results = @connection.with_redis do |redis|
+            redis.pipelined do |pipeline|
+              client_ids.each do |client_id|
+                pipeline.exists?(client_key(client_id))
+              end
             end
           end
+
+          # Collect expired client IDs
+          expired_clients = []
+          client_ids.each_with_index do |client_id, index|
+            result = results[index]
+            # Redis 5.x returns boolean, older versions return integer
+            exists = result.is_a?(Integer) ? result > 0 : result
+            expired_clients << client_id unless exists
+          end
+
+          # Batch delete expired clients
+          if expired_clients.any?
+            @connection.with_redis do |redis|
+              redis.pipelined do |pipeline|
+                expired_clients.each do |client_id|
+                  pipeline.del(client_key(client_id))
+                  pipeline.srem?(clients_index_key, client_id)
+                end
+              end
+            end
+          end
+
+          EventMachine.next_tick { callback.call(expired_clients.size) } if callback
         end
+      rescue => e
+        log_error("Failed to cleanup expired clients: #{e.message}")
+        EventMachine.next_tick { callback.call(0) } if callback
       end
 
       private

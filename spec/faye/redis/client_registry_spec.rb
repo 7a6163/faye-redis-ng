@@ -197,5 +197,123 @@ RSpec.describe Faye::Redis::ClientRegistry do
         end
       end
     end
+
+    it 'calls callback with number of cleaned clients' do
+      em_run do
+        registry.create('client-1') do
+          registry.create('client-2') do
+            registry.create('client-3') do
+              # Simulate expiration of 2 clients
+              connection.with_redis do |redis|
+                redis.del('test:clients:client-1')
+                redis.del('test:clients:client-2')
+              end
+
+              registry.cleanup_expired do |count|
+                expect(count).to eq(2)
+                EM.stop
+              end
+            end
+          end
+        end
+      end
+    end
+
+    it 'handles batch cleanup efficiently' do
+      em_run do
+        # Create multiple clients
+        registry.create('client-1') do
+          registry.create('client-2') do
+            registry.create('client-3') do
+              registry.create('client-4') do
+                registry.create('client-5') do
+                  # Expire 3 clients
+                  connection.with_redis do |redis|
+                    redis.del('test:clients:client-1')
+                    redis.del('test:clients:client-3')
+                    redis.del('test:clients:client-5')
+                  end
+
+                  registry.cleanup_expired do |count|
+                    expect(count).to eq(3)
+
+                    # Verify remaining clients
+                    registry.all do |client_ids|
+                      expect(client_ids).to contain_exactly('client-2', 'client-4')
+                      EM.stop
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+
+    it 'handles cleanup with no expired clients' do
+      em_run do
+        registry.create('client-1') do
+          registry.create('client-2') do
+            # No clients expired, cleanup should return 0
+            registry.cleanup_expired do |count|
+              expect(count).to eq(0)
+              EM.stop
+            end
+          end
+        end
+      end
+    end
+  end
+
+  describe 'error handling' do
+    it 'handles ping errors gracefully' do
+      em_run do
+        # Disconnect to cause error
+        connection.disconnect
+
+        expect {
+          registry.ping('client-123')
+        }.not_to raise_error
+
+        EM.stop
+      end
+    end
+
+    it 'handles get errors gracefully' do
+      em_run do
+        # Disconnect to cause error
+        connection.disconnect
+
+        registry.get('client-123') do |data|
+          expect(data).to be_nil
+          EM.stop
+        end
+      end
+    end
+
+    it 'handles exists? errors gracefully' do
+      em_run do
+        # Disconnect to cause error
+        connection.disconnect
+
+        registry.exists?('client-123') do |exists|
+          expect(exists).to be false
+          EM.stop
+        end
+      end
+    end
+
+    it 'handles all errors gracefully' do
+      em_run do
+        # Disconnect to cause error
+        connection.disconnect
+
+        registry.all do |client_ids|
+          expect(client_ids).to eq([])
+          EM.stop
+        end
+      end
+    end
   end
 end

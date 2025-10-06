@@ -138,8 +138,19 @@ module Faye
 
       # Clear a client's message queue
       def clear(client_id, &callback)
+        # Get all message IDs first
+        message_ids = @connection.with_redis do |redis|
+          redis.lrange(queue_key(client_id), 0, -1)
+        end
+
+        # Delete queue and all message data
         @connection.with_redis do |redis|
-          redis.del(queue_key(client_id))
+          redis.pipelined do |pipeline|
+            pipeline.del(queue_key(client_id))
+            message_ids.each do |message_id|
+              pipeline.del(message_key(message_id))
+            end
+          end
         end
 
         EventMachine.next_tick { callback.call(true) } if callback

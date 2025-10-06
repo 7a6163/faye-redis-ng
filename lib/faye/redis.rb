@@ -66,7 +66,9 @@ module Faye
     # Destroy a client
     def destroy_client(client_id, &callback)
       @subscription_manager.unsubscribe_all(client_id) do
-        @client_registry.destroy(client_id, &callback)
+        @message_queue.clear(client_id) do
+          @client_registry.destroy(client_id, &callback)
+        end
       end
     end
 
@@ -93,26 +95,49 @@ module Faye
     # Publish a message to channels
     def publish(message, channels, &callback)
       channels = [channels] unless channels.is_a?(Array)
-      success = true
 
       begin
+        remaining_operations = channels.size
+        success = true
+
         channels.each do |channel|
           # Store message in queues for subscribed clients
           @subscription_manager.get_subscribers(channel) do |client_ids|
-            client_ids.each do |client_id|
-              @message_queue.enqueue(client_id, message) do |enqueued|
-                success &&= enqueued
+            enqueue_count = client_ids.size
+
+            if enqueue_count == 0
+              # No clients to enqueue, just do pub/sub
+              @pubsub_coordinator.publish(channel, message) do |published|
+                success &&= published
+                remaining_operations -= 1
+
+                if remaining_operations == 0 && callback
+                  EventMachine.next_tick { callback.call(success) }
+                end
+              end
+            else
+              # Enqueue for all subscribed clients
+              client_ids.each do |client_id|
+                @message_queue.enqueue(client_id, message) do |enqueued|
+                  success &&= enqueued
+                  enqueue_count -= 1
+
+                  # When all enqueues are done, do pub/sub
+                  if enqueue_count == 0
+                    @pubsub_coordinator.publish(channel, message) do |published|
+                      success &&= published
+                      remaining_operations -= 1
+
+                      if remaining_operations == 0 && callback
+                        EventMachine.next_tick { callback.call(success) }
+                      end
+                    end
+                  end
+                end
               end
             end
           end
-
-          # Publish to Redis pub/sub for cross-server routing
-          @pubsub_coordinator.publish(channel, message) do |published|
-            success &&= published
-          end
         end
-
-        EventMachine.next_tick { callback.call(success) } if callback
       rescue => e
         log_error("Failed to publish message to channels #{channels}: #{e.message}")
         EventMachine.next_tick { callback.call(false) } if callback

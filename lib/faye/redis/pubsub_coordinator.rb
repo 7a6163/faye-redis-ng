@@ -166,9 +166,9 @@ module Faye
         begin
           message = JSON.parse(message_json)
 
-          # Notify all subscribers
+          # Notify all subscribers (use dup to avoid concurrent modification)
           EventMachine.next_tick do
-            @subscribers.each do |subscriber|
+            @subscribers.dup.each do |subscriber|
               subscriber.call(channel, message)
             end
           end
