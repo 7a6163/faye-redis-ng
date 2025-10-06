@@ -23,7 +23,7 @@ module Faye
         @connection.with_redis do |redis|
           redis.multi do |multi|
             multi.hset(client_key(client_id), client_data.transform_keys(&:to_s))
-            multi.sadd(clients_index_key, client_id)
+            multi.sadd?(clients_index_key, client_id)
             multi.expire(client_key(client_id), client_timeout)
           end
         end
@@ -39,7 +39,7 @@ module Faye
         @connection.with_redis do |redis|
           redis.multi do |multi|
             multi.del(client_key(client_id))
-            multi.srem(clients_index_key, client_id)
+            multi.srem?(clients_index_key, client_id)
           end
         end
 

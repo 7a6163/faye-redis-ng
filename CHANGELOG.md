@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2025-10-06
+
+### Fixed
+- **Redis 5.0 Compatibility**: Changed `sadd`/`srem` to `sadd?`/`srem?` to eliminate deprecation warnings in Redis 5.0+
+
 ## [1.0.1] - 2025-10-06
 
 ### Changed
@@ -42,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - Client and message IDs now use `SecureRandom.uuid` instead of predictable time-based generation
 
-[Unreleased]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/7a6163/faye-redis-ng/releases/tag/v1.0.0

@@ -15,10 +15,10 @@ module Faye
         @connection.with_redis do |redis|
           redis.multi do |multi|
             # Add channel to client's subscriptions
-            multi.sadd(client_subscriptions_key(client_id), channel)
+            multi.sadd?(client_subscriptions_key(client_id), channel)
 
             # Add client to channel's subscribers
-            multi.sadd(channel_subscribers_key(channel), client_id)
+            multi.sadd?(channel_subscribers_key(channel), client_id)
 
             # Store subscription metadata
             multi.hset(
@@ -30,7 +30,7 @@ module Faye
 
             # Handle wildcard patterns
             if channel.include?('*')
-              multi.sadd(patterns_key, channel)
+              multi.sadd?(patterns_key, channel)
             end
           end
         end
@@ -46,10 +46,10 @@ module Faye
         @connection.with_redis do |redis|
           redis.multi do |multi|
             # Remove channel from client's subscriptions
-            multi.srem(client_subscriptions_key(client_id), channel)
+            multi.srem?(client_subscriptions_key(client_id), channel)
 
             # Remove client from channel's subscribers
-            multi.srem(channel_subscribers_key(channel), client_id)
+            multi.srem?(channel_subscribers_key(channel), client_id)
 
             # Delete subscription metadata
             multi.del(subscription_key(client_id, channel))
