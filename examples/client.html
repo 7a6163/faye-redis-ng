@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Faye Redis NG Example</title>
+  <script src="https://cdn.jsdelivr.net/npm/faye@1.4.0/browser/faye-browser.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    .container {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-top: 20px;
+    }
+    .panel {
+      border: 1px solid #ddd;
+      padding: 15px;
+      border-radius: 5px;
+    }
+    input[type="text"] {
+      width: calc(100% - 100px);
+      padding: 8px;
+      margin: 5px 0;
+    }
+    button {
+      padding: 8px 15px;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #0056b3;
+    }
+    #messages {
+      border: 1px solid #ccc;
+      padding: 10px;
+      min-height: 300px;
+      max-height: 400px;
+      overflow-y: auto;
+      background: #f9f9f9;
+      margin-top: 10px;
+    }
+    .message {
+      margin-bottom: 10px;
+      padding: 8px;
+      background: white;
+      border-left: 3px solid #007bff;
+    }
+    .message-time {
+      font-size: 0.8em;
+      color: #666;
+    }
+    .status {
+      padding: 10px;
+      margin: 10px 0;
+      border-radius: 3px;
+    }
+    .status.connected {
+      background: #d4edda;
+      color: #155724;
+    }
+    .status.disconnected {
+      background: #f8d7da;
+      color: #721c24;
+    }
+  </style>
+</head>
+<body>
+  <h1>🚀 Faye Redis NG Example</h1>
+
+  <div id="status" class="status disconnected">Disconnected</div>
+
+  <div class="container">
+    <div class="panel">
+      <h2>📡 Subscribe</h2>
+      <input type="text" id="channel" placeholder="/messages" value="/messages">
+      <button onclick="subscribe()">Subscribe</button>
+
+      <h3>Subscribed Channels:</h3>
+      <div id="subscriptions" style="font-size: 0.9em; color: #666;"></div>
+    </div>
+
+    <div class="panel">
+      <h2>📤 Publish</h2>
+      <input type="text" id="pubChannel" placeholder="/messages" value="/messages">
+      <input type="text" id="message" placeholder="Type your message...">
+      <button onclick="publish()">Send</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>💬 Messages</h2>
+    <button onclick="clearMessages()" style="float: right; background: #dc3545;">Clear</button>
+    <div id="messages"></div>
+  </div>
+
+  <script>
+    let client;
+    let subscriptions = new Set();
+
+    // Connect to Faye server
+    function connect() {
+      const port = window.location.port || '9292';
+      const fayeUrl = `http://${window.location.hostname}:${port}/faye`;
+
+      client = new Faye.Client(fayeUrl);
+
+      client.on('transport:up', function() {
+        updateStatus('connected');
+        console.log('Connected to Faye server');
+      });
+
+      client.on('transport:down', function() {
+        updateStatus('disconnected');
+        console.log('Disconnected from Faye server');
+      });
+    }
+
+    // Update connection status
+    function updateStatus(status) {
+      const statusEl = document.getElementById('status');
+      if (status === 'connected') {
+        statusEl.className = 'status connected';
+        statusEl.textContent = '✅ Connected to Faye';
+      } else {
+        statusEl.className = 'status disconnected';
+        statusEl.textContent = '❌ Disconnected';
+      }
+    }
+
+    // Subscribe to a channel
+    function subscribe() {
+      const channel = document.getElementById('channel').value.trim();
+
+      if (!channel) {
+        alert('Please enter a channel name');
+        return;
+      }
+
+      if (subscriptions.has(channel)) {
+        alert('Already subscribed to ' + channel);
+        return;
+      }
+
+      client.subscribe(channel, function(message) {
+        console.log('Received from', channel, ':', message);
+        displayMessage(channel, message);
+      });
+
+      subscriptions.add(channel);
+      updateSubscriptionsList();
+      console.log('Subscribed to ' + channel);
+    }
+
+    // Publish a message
+    function publish() {
+      const channel = document.getElementById('pubChannel').value.trim();
+      const messageText = document.getElementById('message').value.trim();
+
+      if (!channel || !messageText) {
+        alert('Please enter both channel and message');
+        return;
+      }
+
+      const message = {
+        text: messageText,
+        timestamp: new Date().toISOString(),
+        sender: 'Client-' + Math.random().toString(36).substr(2, 5)
+      };
+
+      client.publish(channel, message);
+      console.log('Published to', channel, ':', message);
+
+      // Clear input
+      document.getElementById('message').value = '';
+    }
+
+    // Display received message
+    function displayMessage(channel, message) {
+      const messagesDiv = document.getElementById('messages');
+      const messageEl = document.createElement('div');
+      messageEl.className = 'message';
+
+      const time = message.timestamp ? new Date(message.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+
+      messageEl.innerHTML = `
+        <div class="message-time">${time} - <strong>${channel}</strong></div>
+        <div>${message.text || JSON.stringify(message, null, 2)}</div>
+        ${message.sender ? `<div style="font-size: 0.8em; color: #999;">from: ${message.sender}</div>` : ''}
+      `;
+
+      messagesDiv.insertBefore(messageEl, messagesDiv.firstChild);
+    }
+
+    // Update subscriptions list
+    function updateSubscriptionsList() {
+      const subsEl = document.getElementById('subscriptions');
+      if (subscriptions.size === 0) {
+        subsEl.innerHTML = '<em>No subscriptions yet</em>';
+      } else {
+        subsEl.innerHTML = Array.from(subscriptions).map(ch => `• ${ch}`).join('<br>');
+      }
+    }
+
+    // Clear messages
+    function clearMessages() {
+      document.getElementById('messages').innerHTML = '';
+    }
+
+    // Handle Enter key for message input
+    document.getElementById('message').addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') {
+        publish();
+      }
+    });
+
+    // Auto-connect on load
+    window.onload = function() {
+      connect();
+      updateSubscriptionsList();
+    };
+  </script>
+</body>
+</html>

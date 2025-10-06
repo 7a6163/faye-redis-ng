@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Faye Chat Room</title>
+  <script src="https://cdn.jsdelivr.net/npm/faye@1.4.0/browser/faye-browser.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #f0f2f5;
+    }
+    .container {
+      display: flex;
+      height: 100vh;
+    }
+    .sidebar {
+      width: 250px;
+      background: #2c3e50;
+      color: white;
+      padding: 20px;
+    }
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+    .header {
+      background: white;
+      padding: 20px;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    .messages {
+      flex: 1;
+      padding: 20px;
+      overflow-y: auto;
+      background: #f0f2f5;
+    }
+    .message-input {
+      background: white;
+      padding: 20px;
+      border-top: 1px solid #e0e0e0;
+      display: flex;
+      gap: 10px;
+    }
+    .message-input input {
+      flex: 1;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 25px;
+      font-size: 14px;
+    }
+    .message-input button {
+      padding: 12px 25px;
+      background: #0084ff;
+      color: white;
+      border: none;
+      border-radius: 25px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .message {
+      margin-bottom: 15px;
+      animation: fadeIn 0.3s;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .message.own {
+      text-align: right;
+    }
+    .message-bubble {
+      display: inline-block;
+      padding: 10px 15px;
+      border-radius: 18px;
+      max-width: 70%;
+      word-wrap: break-word;
+    }
+    .message.own .message-bubble {
+      background: #0084ff;
+      color: white;
+    }
+    .message.other .message-bubble {
+      background: white;
+      color: #333;
+    }
+    .message-meta {
+      font-size: 11px;
+      color: #999;
+      margin-top: 5px;
+    }
+    .room-list {
+      margin-top: 20px;
+    }
+    .room {
+      padding: 10px;
+      margin: 5px 0;
+      background: rgba(255,255,255,0.1);
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .room.active {
+      background: #0084ff;
+    }
+    .user-info {
+      background: rgba(255,255,255,0.1);
+      padding: 15px;
+      border-radius: 5px;
+      margin-bottom: 20px;
+    }
+    .status {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 8px;
+    }
+    .status.online { background: #2ecc71; }
+    .status.offline { background: #e74c3c; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="sidebar">
+      <div class="user-info">
+        <div id="username"></div>
+        <div style="margin-top: 5px;">
+          <span class="status" id="status"></span>
+          <span id="statusText">Connecting...</span>
+        </div>
+      </div>
+
+      <h3>Chat Rooms</h3>
+      <div class="room-list">
+        <div class="room active" onclick="switchRoom('general')">
+          # general
+        </div>
+        <div class="room" onclick="switchRoom('random')">
+          # random
+        </div>
+        <div class="room" onclick="switchRoom('tech')">
+          # tech
+        </div>
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="header">
+        <h2 id="roomName"># general</h2>
+      </div>
+
+      <div class="messages" id="messages"></div>
+
+      <div class="message-input">
+        <input
+          type="text"
+          id="messageInput"
+          placeholder="Type a message..."
+          onkeypress="handleKeyPress(event)"
+        >
+        <button onclick="sendMessage()">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let client;
+    let currentRoom = 'general';
+    let username = 'User-' + Math.random().toString(36).substr(2, 6);
+    let subscription;
+
+    // Initialize
+    document.getElementById('username').textContent = username;
+
+    // Connect to Faye
+    function connect() {
+      client = new Faye.Client('http://localhost:9292/faye');
+
+      client.on('transport:up', function() {
+        updateStatus(true);
+        subscribeToRoom(currentRoom);
+      });
+
+      client.on('transport:down', function() {
+        updateStatus(false);
+      });
+    }
+
+    // Update connection status
+    function updateStatus(connected) {
+      const statusEl = document.getElementById('status');
+      const statusText = document.getElementById('statusText');
+
+      if (connected) {
+        statusEl.className = 'status online';
+        statusText.textContent = 'Online';
+      } else {
+        statusEl.className = 'status offline';
+        statusText.textContent = 'Offline';
+      }
+    }
+
+    // Switch room
+    function switchRoom(room) {
+      // Unsubscribe from current room
+      if (subscription) {
+        subscription.cancel();
+      }
+
+      currentRoom = room;
+      document.getElementById('roomName').textContent = '# ' + room;
+      document.getElementById('messages').innerHTML = '';
+
+      // Update active room UI
+      document.querySelectorAll('.room').forEach(el => {
+        el.classList.remove('active');
+      });
+      event.target.classList.add('active');
+
+      // Subscribe to new room
+      subscribeToRoom(room);
+    }
+
+    // Subscribe to room
+    function subscribeToRoom(room) {
+      const channel = '/chat/' + room;
+      subscription = client.subscribe(channel, function(message) {
+        displayMessage(message);
+      });
+    }
+
+    // Send message
+    function sendMessage() {
+      const input = document.getElementById('messageInput');
+      const text = input.value.trim();
+
+      if (!text) return;
+
+      const message = {
+        username: username,
+        text: text,
+        timestamp: new Date().toISOString()
+      };
+
+      client.publish('/chat/' + currentRoom, message);
+      input.value = '';
+    }
+
+    // Display message
+    function displayMessage(message) {
+      const messagesDiv = document.getElementById('messages');
+      const messageEl = document.createElement('div');
+
+      const isOwn = message.username === username;
+      messageEl.className = 'message ' + (isOwn ? 'own' : 'other');
+
+      const time = new Date(message.timestamp).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+
+      messageEl.innerHTML = `
+        <div class="message-bubble">
+          ${!isOwn ? `<strong>${message.username}</strong><br>` : ''}
+          ${message.text}
+        </div>
+        <div class="message-meta">${time}</div>
+      `;
+
+      messagesDiv.appendChild(messageEl);
+      messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    // Handle Enter key
+    function handleKeyPress(event) {
+      if (event.key === 'Enter') {
+        sendMessage();
+      }
+    }
+
+    // Start
+    window.onload = connect;
+  </script>
+</body>
+</html>

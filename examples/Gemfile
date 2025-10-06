@@ -1,0 +1,10 @@
+source 'https://rubygems.org'
+
+gem 'faye', '~> 1.4'
+gem 'rack', '~> 2.2'
+gem 'redis', '~> 5.0'
+gem 'connection_pool', '~> 2.4'
+gem 'eventmachine', '~> 1.2'
+
+# For running the server
+gem 'thin', '~> 1.8'
