@@ -85,6 +85,18 @@ RSpec.describe Faye::Redis do
         end
       end
     end
+
+    it 'returns nil when client creation fails' do
+      em_run do
+        # Mock client_registry to fail
+        allow(engine.client_registry).to receive(:create).and_yield(false)
+
+        engine.create_client do |client_id|
+          expect(client_id).to be_nil
+          EM.stop
+        end
+      end
+    end
   end
 
   describe '#destroy_client' do
@@ -313,6 +325,13 @@ RSpec.describe Faye::Redis do
     it 'disconnects all components' do
       engine.disconnect
       expect { engine.connection.ping }.to raise_error(ConnectionPool::PoolShuttingDownError)
+    end
+  end
+
+  describe 'error logging' do
+    it 'logs errors through logger' do
+      expect(engine.instance_variable_get(:@logger)).to receive(:error).with(/test error/)
+      engine.send(:log_error, 'test error')
     end
   end
 end

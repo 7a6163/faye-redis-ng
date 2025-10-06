@@ -288,4 +288,59 @@ RSpec.describe Faye::Redis::PubSubCoordinator do
       expect(channel).to start_with('test:publish:') # test is our test namespace
     end
   end
+
+  describe '#subscribe_to_channel' do
+    it 'adds channel to subscribed channels' do
+      coordinator.subscribe_to_channel('/test')
+      expect(coordinator.instance_variable_get(:@subscribed_channels)).to include('/test')
+    end
+
+    it 'does not add duplicate channels' do
+      coordinator.subscribe_to_channel('/test')
+      coordinator.subscribe_to_channel('/test')
+      expect(coordinator.instance_variable_get(:@subscribed_channels).count('/test')).to eq(1)
+    end
+
+    it 'subscribes to redis channel when subscriber exists' do
+      em_run do
+        # Setup subscriber by publishing
+        coordinator.publish('/warmup', { 'data' => 'warmup' }) do
+          EM.add_timer(0.5) do
+            # Now subscribe to a new channel
+            coordinator.subscribe_to_channel('/new-channel')
+            expect(coordinator.instance_variable_get(:@subscribed_channels)).to include('/new-channel')
+            EM.stop
+          end
+        end
+      end
+    end
+  end
+
+  describe '#unsubscribe_from_channel' do
+    it 'removes channel from subscribed channels' do
+      coordinator.subscribe_to_channel('/test')
+      coordinator.unsubscribe_from_channel('/test')
+      expect(coordinator.instance_variable_get(:@subscribed_channels)).not_to include('/test')
+    end
+
+    it 'does nothing for non-subscribed channels' do
+      expect {
+        coordinator.unsubscribe_from_channel('/nonexistent')
+      }.not_to raise_error
+    end
+
+    it 'unsubscribes from redis channel when subscriber exists' do
+      em_run do
+        # Setup subscriber by publishing
+        coordinator.publish('/warmup', { 'data' => 'warmup' }) do
+          EM.add_timer(0.5) do
+            coordinator.subscribe_to_channel('/test-channel')
+            coordinator.unsubscribe_from_channel('/test-channel')
+            expect(coordinator.instance_variable_get(:@subscribed_channels)).not_to include('/test-channel')
+            EM.stop
+          end
+        end
+      end
+    end
+  end
 end

@@ -159,4 +159,43 @@ RSpec.describe Faye::Redis::ClientRegistry do
       end
     end
   end
+
+  describe '#cleanup_expired' do
+    it 'removes expired clients from index' do
+      em_run do
+        registry.create('client-1') do
+          # Manually remove the client data (simulate expiration)
+          connection.with_redis do |redis|
+            redis.del('test:clients:client-1')
+          end
+
+          # Cleanup should remove from index
+          registry.cleanup_expired
+
+          # Give it time to process
+          EM.add_timer(0.1) do
+            registry.all do |client_ids|
+              expect(client_ids).not_to include('client-1')
+              EM.stop
+            end
+          end
+        end
+      end
+    end
+
+    it 'keeps valid clients in index' do
+      em_run do
+        registry.create('client-1') do
+          registry.cleanup_expired
+
+          EM.add_timer(0.1) do
+            registry.all do |client_ids|
+              expect(client_ids).to include('client-1')
+              EM.stop
+            end
+          end
+        end
+      end
+    end
+  end
 end

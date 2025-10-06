@@ -182,4 +182,23 @@ RSpec.describe Faye::Redis::SubscriptionManager do
       end
     end
   end
+
+  describe '#cleanup_client_subscriptions' do
+    it 'removes all subscriptions for a client' do
+      em_run do
+        manager.subscribe('client-1', '/messages') do
+          manager.subscribe('client-1', '/notifications') do
+            manager.cleanup_client_subscriptions('client-1')
+
+            EM.add_timer(0.1) do
+              manager.get_client_subscriptions('client-1') do |channels|
+                expect(channels).to be_empty
+                EM.stop
+              end
+            end
+          end
+        end
+      end
+    end
+  end
 end

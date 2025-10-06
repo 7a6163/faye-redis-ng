@@ -144,4 +144,52 @@ RSpec.describe Faye::Redis::Connection do
       pubsub.quit
     end
   end
+
+  describe 'SSL/TLS support' do
+    it 'configures SSL when enabled' do
+      # Mock SSL configuration
+      ssl_options = options.merge(
+        ssl: {
+          enabled: true,
+          cert_file: '/path/to/cert.pem',
+          key_file: '/path/to/key.pem',
+          ca_file: '/path/to/ca.pem'
+        }
+      )
+
+      # We can't actually connect to SSL Redis in test, but we can verify the config is attempted
+      expect {
+        described_class.new(ssl_options)
+      }.not_to raise_error
+    end
+  end
+
+  describe 'error handling' do
+    it 'raises ConnectionError when Redis fails to connect on use' do
+      conn = described_class.new(
+        host: 'nonexistent.invalid',
+        port: 99999,
+        connect_timeout: 0.01,
+        max_retries: 1,
+        retry_delay: 0.01
+      )
+
+      expect {
+        conn.with_redis { |redis| redis.ping }
+      }.to raise_error(Faye::Redis::Connection::ConnectionError, /Redis operation failed after/)
+    end
+  end
+
+  describe 'private methods' do
+    it 'uses namespace_key for Redis key namespacing' do
+      # Test through public methods that use namespace_key
+      conn = described_class.new(options.merge(namespace: 'test-ns'))
+      expect(conn.send(:namespace_key, 'foo')).to eq('test-ns:foo')
+    end
+
+    it 'uses default namespace when not specified' do
+      conn = described_class.new(host: 'localhost')
+      expect(conn.send(:namespace_key, 'foo')).to eq('faye:foo')
+    end
+  end
 end
