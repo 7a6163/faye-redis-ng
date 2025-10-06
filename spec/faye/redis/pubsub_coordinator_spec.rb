@@ -78,23 +78,34 @@ RSpec.describe Faye::Redis::PubSubCoordinator do
     end
 
     it 'calls handlers when messages are received' do
+      # Use two separate coordinators to test pub/sub between instances
+      coordinator2 = described_class.new(connection, options)
+
       em_run(3) do
         received_channel = nil
         received_message = nil
 
+        # Subscribe on first coordinator
         coordinator.on_message do |channel, message|
           received_channel = channel
           received_message = message
         end
 
-        # Publish a message
-        message = { 'data' => 'test' }
-        coordinator.publish('/test', message) do
-          # Wait longer for pub/sub to propagate
-          EM.add_timer(1.5) do
-            expect(received_channel).to eq('/test')
-            expect(received_message).to eq(message)
-            EM.stop
+        # Ensure subscriber is set up
+        coordinator.publish('/warmup', { 'data' => 'warmup' }) do
+          # Wait for subscriber to be ready
+          EM.add_timer(0.5) do
+            # Publish from second coordinator
+            message = { 'data' => 'test' }
+            coordinator2.publish('/test', message) do
+              # Wait for pub/sub to propagate
+              EM.add_timer(1) do
+                expect(received_channel).to eq('/test')
+                expect(received_message).to eq(message)
+                coordinator2.disconnect
+                EM.stop
+              end
+            end
           end
         end
       end
@@ -214,18 +225,30 @@ RSpec.describe Faye::Redis::PubSubCoordinator do
 
   describe 'message handling' do
     it 'parses JSON messages correctly' do
+      # Use two separate coordinators to test pub/sub
+      coordinator2 = described_class.new(connection, options)
+
       em_run(3) do
         received_message = nil
 
+        # Subscribe on first coordinator
         coordinator.on_message do |channel, message|
           received_message = message
         end
 
-        message = { 'data' => { 'key' => 'value' }, 'channel' => '/test' }
-        coordinator.publish('/test', message) do
-          EM.add_timer(1.5) do
-            expect(received_message).to eq(message)
-            EM.stop
+        # Ensure subscriber is set up
+        coordinator.publish('/warmup', { 'data' => 'warmup' }) do
+          # Wait for subscriber to be ready
+          EM.add_timer(0.5) do
+            # Publish from second coordinator
+            message = { 'data' => { 'key' => 'value' }, 'channel' => '/test' }
+            coordinator2.publish('/test', message) do
+              EM.add_timer(1) do
+                expect(received_message).to eq(message)
+                coordinator2.disconnect
+                EM.stop
+              end
+            end
           end
         end
       end
