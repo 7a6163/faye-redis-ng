@@ -18,7 +18,7 @@ Gem::Specification.new do |s|
   s.metadata["changelog_uri"] = "https://github.com/7a6163/faye-redis-ng/blob/main/CHANGELOG.md"
 
   # Dependencies
-  s.add_dependency 'redis', '~> 5.0'
+  s.add_dependency 'redis', '>= 4.0'
   s.add_dependency 'connection_pool', '~> 2.5'
   s.add_dependency 'eventmachine', '>= 1.0.0'
 

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2025-10-06
+
+### Changed
+- **Redis Dependency**: Relaxed Redis gem version requirement from `~> 5.0` to `>= 4.0` for better compatibility
+
 ## [1.0.0] - 2025-10-06
 
 ### Added
@@ -37,5 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - Client and message IDs now use `SecureRandom.uuid` instead of predictable time-based generation
 
-[Unreleased]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/7a6163/faye-redis-ng/releases/tag/v1.0.0
