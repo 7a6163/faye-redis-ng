@@ -39,6 +39,18 @@ jobs:
 
     - name: Run tests
       run: bundle exec rspec --format documentation
+      env:
+        CI: true
+
+    - name: Upload coverage to Codecov
+      if: matrix.ruby-version == '3.3'
+      uses: codecov/codecov-action@v5
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: ./coverage/coverage.xml
+        flags: unittests
+        name: ruby-${{ matrix.ruby-version }}
+        fail_ci_if_error: false
 
     - name: Check test results
       if: failure()

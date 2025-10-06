@@ -1,5 +1,8 @@
 # faye-redis-ng
 
+[![Tests](https://github.com/7a6163/faye-redis-ng/actions/workflows/test.yml/badge.svg)](https://github.com/7a6163/faye-redis-ng/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/7a6163/faye-redis-ng/branch/main/graph/badge.svg)](https://codecov.io/gh/7a6163/faye-redis-ng)
+
 A Redis-based backend engine for [Faye](https://faye.jcoglan.com/) messaging server, enabling distribution across multiple web servers.
 
 ## Features

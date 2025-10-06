@@ -1,3 +1,21 @@
+require 'simplecov'
+require 'simplecov-cobertura'
+
+SimpleCov.start do
+  add_filter '/spec/'
+  add_filter '/vendor/'
+
+  enable_coverage :branch
+  minimum_coverage line: 80, branch: 70
+
+  if ENV['CI']
+    SimpleCov.formatters = [
+      SimpleCov::Formatter::HTMLFormatter,
+      SimpleCov::Formatter::CoberturaFormatter
+    ]
+  end
+end
+
 require 'bundler/setup'
 require 'rspec'
 require 'redis'
