@@ -268,4 +268,4 @@ MIT License - see LICENSE file for details
 ## Acknowledgments
 
 - Built for the [Faye](https://faye.jcoglan.com/) messaging system
-- Inspired by the original faye-redis gem
+- Inspired by the original [faye-redis](https://github.com/faye/faye-redis-ruby) gem
