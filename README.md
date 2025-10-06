@@ -208,6 +208,29 @@ gem build faye-redis-ng.gemspec
 gem install ./faye-redis-ng-0.1.0.gem
 ```
 
+### Releasing to RubyGems
+
+This project uses GitHub Actions for automated releases. To publish a new version:
+
+1. Update the version in `lib/faye/redis/version.rb`
+2. Commit the version change
+3. Create and push a git tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The CI/CD pipeline will automatically:
+- Run all tests across multiple Ruby versions
+- Build the gem
+- Publish to RubyGems (requires `RUBYGEMS_API_KEY` secret)
+- Create a GitHub release with the gem attached
+
+**Prerequisites:**
+- Add `RUBYGEMS_API_KEY` to GitHub repository secrets
+- The tag must start with 'v' (e.g., v0.1.0, v1.2.3)
+
 ## Troubleshooting
 
 ### Connection Issues
