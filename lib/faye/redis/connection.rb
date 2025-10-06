@@ -23,7 +23,7 @@ module Faye
       # Check if connected to Redis
       def connected?
         with_redis { |redis| redis.ping == 'PONG' }
-      rescue ::Redis::ConnectionError, ::Redis::TimeoutError, Faye::Redis::Connection::ConnectionError, EOFError => e
+      rescue ::Redis::CannotConnectError, ::Redis::ConnectionError, ::Redis::TimeoutError, Faye::Redis::Connection::ConnectionError, EOFError => e
         false
       end
 
@@ -87,7 +87,7 @@ module Faye
 
         begin
           yield
-        rescue ::Redis::ConnectionError, ::Redis::TimeoutError, EOFError => e
+        rescue ::Redis::CannotConnectError, ::Redis::ConnectionError, ::Redis::TimeoutError, EOFError => e
           attempts += 1
           if attempts < max_attempts
             sleep(retry_delay * (2 ** (attempts - 1))) # Exponential backoff
