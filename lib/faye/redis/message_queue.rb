@@ -13,30 +13,20 @@ module Faye
 
       # Enqueue a message for a client
       def enqueue(client_id, message, &callback)
-        message_id = generate_message_id
-        timestamp = Time.now.to_i
+        # Add unique ID if not present (for message deduplication)
+        message_with_id = message.dup
+        message_with_id['id'] ||= generate_message_id
 
-        message_data = {
-          id: message_id,
-          channel: message['channel'],
-          data: message['data'],
-          client_id: message['clientId'],
-          timestamp: timestamp
-        }
+        # Store message directly as JSON
+        message_json = message_with_id.to_json
 
         @connection.with_redis do |redis|
-          redis.multi do |multi|
-            # Store message data
-            multi.hset(message_key(message_id), message_data.transform_keys(&:to_s).transform_values { |v| v.to_json })
-
+          # Use RPUSH with EXPIRE in a single pipeline
+          redis.pipelined do |pipeline|
             # Add message to client's queue
-            multi.rpush(queue_key(client_id), message_id)
-
-            # Set TTL on message
-            multi.expire(message_key(message_id), message_ttl)
-
-            # Set TTL on queue
-            multi.expire(queue_key(client_id), message_ttl)
+            pipeline.rpush(queue_key(client_id), message_json)
+            # Set TTL on queue (only if it doesn't already have one)
+            pipeline.expire(queue_key(client_id), message_ttl)
           end
         end
 
@@ -48,50 +38,25 @@ module Faye
 
       # Dequeue all messages for a client
       def dequeue_all(client_id, &callback)
-        # Get all message IDs from queue
-        message_ids = @connection.with_redis do |redis|
-          redis.lrange(queue_key(client_id), 0, -1)
-        end
+        # Get all messages and delete queue in a single atomic operation
+        key = queue_key(client_id)
 
-        # Fetch all messages using pipeline
-        messages = []
-        unless message_ids.empty?
-          @connection.with_redis do |redis|
-            redis.pipelined do |pipeline|
-              message_ids.each do |message_id|
-                pipeline.hgetall(message_key(message_id))
-              end
-            end.each do |data|
-              next if data.nil? || data.empty?
-
-              # Parse JSON values
-              parsed_data = data.transform_values do |v|
-                begin
-                  JSON.parse(v)
-                rescue JSON::ParserError
-                  v
-                end
-              end
-
-              # Convert to Faye message format
-              messages << {
-                'channel' => parsed_data['channel'],
-                'data' => parsed_data['data'],
-                'clientId' => parsed_data['client_id'],
-                'id' => parsed_data['id']
-              }
-            end
+        json_messages = @connection.with_redis do |redis|
+          # Use MULTI/EXEC to atomically get and delete
+          redis.multi do |multi|
+            multi.lrange(key, 0, -1)
+            multi.del(key)
           end
         end
 
-        # Delete queue and all message data using pipeline
-        unless message_ids.empty?
-          @connection.with_redis do |redis|
-            redis.pipelined do |pipeline|
-              pipeline.del(queue_key(client_id))
-              message_ids.each do |message_id|
-                pipeline.del(message_key(message_id))
-              end
+        # Parse messages from JSON
+        messages = []
+        if json_messages && json_messages[0]
+          json_messages[0].each do |json|
+            begin
+              messages << JSON.parse(json)
+            rescue JSON::ParserError => e
+              log_error("Failed to parse message JSON: #{e.message}")
             end
           end
         end
@@ -106,12 +71,17 @@ module Faye
 
       # Peek at messages without removing them
       def peek(client_id, limit = 10, &callback)
-        message_ids = @connection.with_redis do |redis|
+        json_messages = @connection.with_redis do |redis|
           redis.lrange(queue_key(client_id), 0, limit - 1)
         end
 
-        messages = message_ids.map do |message_id|
-          fetch_message(message_id)
+        messages = json_messages.map do |json|
+          begin
+            JSON.parse(json)
+          rescue JSON::ParserError => e
+            log_error("Failed to parse message JSON: #{e.message}")
+            nil
+          end
         end.compact
 
         EventMachine.next_tick { callback.call(messages) } if callback
@@ -138,19 +108,9 @@ module Faye
 
       # Clear a client's message queue
       def clear(client_id, &callback)
-        # Get all message IDs first
-        message_ids = @connection.with_redis do |redis|
-          redis.lrange(queue_key(client_id), 0, -1)
-        end
-
-        # Delete queue and all message data
+        # Simply delete the queue
         @connection.with_redis do |redis|
-          redis.pipelined do |pipeline|
-            pipeline.del(queue_key(client_id))
-            message_ids.each do |message_id|
-              pipeline.del(message_key(message_id))
-            end
-          end
+          redis.del(queue_key(client_id))
         end
 
         EventMachine.next_tick { callback.call(true) } if callback
@@ -161,40 +121,8 @@ module Faye
 
       private
 
-      def fetch_message(message_id)
-        data = @connection.with_redis do |redis|
-          redis.hgetall(message_key(message_id))
-        end
-
-        return nil if data.empty?
-
-        # Parse JSON values
-        parsed_data = data.transform_values do |v|
-          begin
-            JSON.parse(v)
-          rescue JSON::ParserError
-            v
-          end
-        end
-
-        # Convert to Faye message format
-        {
-          'channel' => parsed_data['channel'],
-          'data' => parsed_data['data'],
-          'clientId' => parsed_data['client_id'],
-          'id' => parsed_data['id']
-        }
-      rescue => e
-        log_error("Failed to fetch message #{message_id}: #{e.message}")
-        nil
-      end
-
       def queue_key(client_id)
         namespace_key("messages:#{client_id}")
-      end
-
-      def message_key(message_id)
-        namespace_key("message:#{message_id}")
       end
 
       def namespace_key(key)

@@ -101,40 +101,24 @@ module Faye
         success = true
 
         channels.each do |channel|
-          # Store message in queues for subscribed clients
+          # Get subscribers and process in parallel
           @subscription_manager.get_subscribers(channel) do |client_ids|
-            enqueue_count = client_ids.size
+            # Immediately publish to pub/sub (don't wait for enqueue)
+            @pubsub_coordinator.publish(channel, message) do |published|
+              success &&= published
+            end
 
-            if enqueue_count == 0
-              # No clients to enqueue, just do pub/sub
-              @pubsub_coordinator.publish(channel, message) do |published|
-                success &&= published
-                remaining_operations -= 1
-
-                if remaining_operations == 0 && callback
-                  EventMachine.next_tick { callback.call(success) }
-                end
+            # Enqueue for all subscribed clients in parallel (batch operation)
+            if client_ids.any?
+              enqueue_messages_batch(client_ids, message) do |enqueued|
+                success &&= enqueued
               end
-            else
-              # Enqueue for all subscribed clients
-              client_ids.each do |client_id|
-                @message_queue.enqueue(client_id, message) do |enqueued|
-                  success &&= enqueued
-                  enqueue_count -= 1
+            end
 
-                  # When all enqueues are done, do pub/sub
-                  if enqueue_count == 0
-                    @pubsub_coordinator.publish(channel, message) do |published|
-                      success &&= published
-                      remaining_operations -= 1
-
-                      if remaining_operations == 0 && callback
-                        EventMachine.next_tick { callback.call(success) }
-                      end
-                    end
-                  end
-                end
-              end
+            # Track completion
+            remaining_operations -= 1
+            if remaining_operations == 0 && callback
+              EventMachine.next_tick { callback.call(success) }
             end
           end
         end
@@ -161,13 +145,38 @@ module Faye
       SecureRandom.uuid
     end
 
+    # Batch enqueue messages to multiple clients using a single Redis pipeline
+    def enqueue_messages_batch(client_ids, message, &callback)
+      return EventMachine.next_tick { callback.call(true) } if client_ids.empty? || !callback
+
+      message_json = message.to_json
+      message_ttl = @options[:message_ttl] || 3600
+      namespace = @options[:namespace] || 'faye'
+
+      begin
+        @connection.with_redis do |redis|
+          redis.pipelined do |pipeline|
+            client_ids.each do |client_id|
+              queue_key = "#{namespace}:messages:#{client_id}"
+              pipeline.rpush(queue_key, message_json)
+              pipeline.expire(queue_key, message_ttl)
+            end
+          end
+        end
+
+        EventMachine.next_tick { callback.call(true) } if callback
+      rescue => e
+        log_error("Failed to batch enqueue messages: #{e.message}")
+        EventMachine.next_tick { callback.call(false) } if callback
+      end
+    end
+
     def setup_message_routing
       # Subscribe to message events from other servers
       @pubsub_coordinator.on_message do |channel, message|
         @subscription_manager.get_subscribers(channel) do |client_ids|
-          client_ids.each do |client_id|
-            @message_queue.enqueue(client_id, message)
-          end
+          # Use batch enqueue for better performance
+          enqueue_messages_batch(client_ids, message) if client_ids.any?
         end
       end
     end
