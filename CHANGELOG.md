@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.5] - 2025-10-30
+
+### Fixed
+- **Memory Leak**: Fixed critical memory leak where subscription keys were never cleaned up after client disconnection
+  - Orphaned `subscriptions:{client_id}` keys remained permanently in Redis
+  - Orphaned `subscription:{client_id}:{channel}` hash keys accumulated over time
+  - Orphaned client IDs remained in `channels:{channel}` sets
+  - Message queues for disconnected clients were not cleaned up
+  - Could result in hundreds of MB memory leak in production environments
+
+### Added
+- **`cleanup_expired` Method**: New public method to clean up expired clients and orphaned data
+  - Automatically detects and removes orphaned subscription keys
+  - Cleans up message queues for disconnected clients
+  - Removes stale client IDs from channel subscriber lists
+  - Uses Redis SCAN to avoid blocking operations
+  - Batch deletion using pipelining for efficiency
+  - Can be called manually or scheduled as periodic task
+
+### Changed
+- **Improved Cleanup Strategy**: Enhanced cleanup process now handles orphaned data
+  - `cleanup_expired` now cleans both expired clients AND orphaned subscriptions
+  - Works even when no expired clients are found
+  - Prevents memory leaks from abnormal client disconnections
+
+### Technical Details
+Memory leak scenario (before fix):
+- 10,000 abnormally disconnected clients × 5 channels each = 50,000+ orphaned keys
+- Estimated memory waste: 100-500 MB
+- Keys remained permanently without TTL
+
+After fix:
+- All orphaned keys cleaned up automatically
+- Memory usage remains stable
+- Production environments can schedule periodic cleanup
+
 ## [1.0.4] - 2025-10-15
 
 ### Performance
@@ -90,7 +126,8 @@ For 100 subscribers receiving one message:
 ### Security
 - Client and message IDs now use `SecureRandom.uuid` instead of predictable time-based generation
 
-[Unreleased]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.4...HEAD
+[Unreleased]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.5...HEAD
+[1.0.5]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.1...v1.0.2

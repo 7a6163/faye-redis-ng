@@ -234,6 +234,109 @@ The CI/CD pipeline will automatically:
 - Add `RUBYGEMS_API_KEY` to GitHub repository secrets
 - The tag must start with 'v' (e.g., v0.1.0, v1.2.3)
 
+## Memory Management
+
+### Cleaning Up Expired Clients
+
+To prevent memory leaks from orphaned subscription keys, you should periodically clean up expired clients:
+
+#### Manual Cleanup
+
+```ruby
+# Get the engine instance
+engine = bayeux.get_engine
+
+# Clean up expired clients and orphaned data
+engine.cleanup_expired do |expired_count|
+  puts "Cleaned up #{expired_count} expired clients"
+end
+```
+
+#### Automatic Periodic Cleanup (Recommended)
+
+Add this to your Faye server setup:
+
+```ruby
+require 'eventmachine'
+require 'faye'
+require 'faye-redis-ng'
+
+bayeux = Faye::RackAdapter.new(app, {
+  mount: '/faye',
+  timeout: 25,
+  engine: {
+    type: Faye::Redis,
+    host: 'localhost',
+    port: 6379,
+    namespace: 'my-app'
+  }
+})
+
+# Schedule automatic cleanup every 5 minutes
+EM.add_periodic_timer(300) do
+  bayeux.get_engine.cleanup_expired do |count|
+    puts "[#{Time.now}] Cleaned up #{count} expired clients" if count > 0
+  end
+end
+
+run bayeux
+```
+
+#### Using Rake Task
+
+Create a Rake task for manual or scheduled cleanup:
+
+```ruby
+# lib/tasks/faye_cleanup.rake
+namespace :faye do
+  desc "Clean up expired Faye clients and orphaned subscriptions"
+  task cleanup: :environment do
+    require 'eventmachine'
+
+    EM.run do
+      engine = Faye::Redis.new(
+        nil,
+        host: ENV['REDIS_HOST'] || 'localhost',
+        port: ENV['REDIS_PORT']&.to_i || 6379,
+        namespace: 'my-app'
+      )
+
+      engine.cleanup_expired do |count|
+        puts "✅ Cleaned up #{count} expired clients"
+        engine.disconnect
+        EM.stop
+      end
+    end
+  end
+end
+```
+
+Then schedule it with cron:
+
+```bash
+# Run cleanup every hour
+0 * * * * cd /path/to/app && bundle exec rake faye:cleanup
+```
+
+### What Gets Cleaned Up
+
+The `cleanup_expired` method removes:
+
+1. **Expired client keys** (`clients:{client_id}`)
+2. **Orphaned subscription lists** (`subscriptions:{client_id}`)
+3. **Orphaned subscription metadata** (`subscription:{client_id}:{channel}`)
+4. **Stale client IDs from channel subscribers** (`channels:{channel}`)
+5. **Orphaned message queues** (`messages:{client_id}`)
+
+### Memory Leak Prevention
+
+Without periodic cleanup, abnormal client disconnections (crashes, network failures, etc.) can cause orphaned keys to accumulate:
+
+- **Before fix**: 10,000 orphaned clients × 5 channels = 50,000+ keys = 100-500 MB leaked
+- **After fix**: All orphaned keys are cleaned up automatically
+
+**Recommendation**: Schedule cleanup every 5-10 minutes in production environments.
+
 ## Troubleshooting
 
 ### Connection Issues

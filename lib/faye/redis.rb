@@ -1,4 +1,5 @@
 require 'securerandom'
+require 'set'
 require_relative 'redis/version'
 require_relative 'redis/logger'
 require_relative 'redis/connection'
@@ -139,6 +140,19 @@ module Faye
       @connection.disconnect
     end
 
+    # Clean up expired clients and their associated data
+    def cleanup_expired(&callback)
+      @client_registry.cleanup_expired do |expired_count|
+        @logger.info("Cleaned up #{expired_count} expired clients") if expired_count > 0
+
+        # Always clean up orphaned subscription keys (even if no expired clients)
+        # This handles cases where subscriptions were orphaned due to crashes
+        cleanup_orphaned_subscriptions do
+          callback.call(expired_count) if callback
+        end
+      end
+    end
+
     private
 
     def generate_client_id
@@ -169,6 +183,62 @@ module Faye
         log_error("Failed to batch enqueue messages: #{e.message}")
         EventMachine.next_tick { callback.call(false) } if callback
       end
+    end
+
+    def cleanup_orphaned_subscriptions(&callback)
+      # Get all active client IDs
+      @client_registry.all do |active_clients|
+        active_set = active_clients.to_set
+        namespace = @options[:namespace] || 'faye'
+
+        # Scan for subscription keys and clean up orphaned ones
+        @connection.with_redis do |redis|
+          cursor = "0"
+          orphaned_keys = []
+
+          loop do
+            cursor, keys = redis.scan(cursor, match: "#{namespace}:subscriptions:*", count: 100)
+
+            keys.each do |key|
+              # Extract client_id from key (format: namespace:subscriptions:client_id)
+              client_id = key.split(':').last
+              orphaned_keys << client_id unless active_set.include?(client_id)
+            end
+
+            break if cursor == "0"
+          end
+
+          # Clean up orphaned subscription data
+          if orphaned_keys.any?
+            @logger.info("Cleaning up #{orphaned_keys.size} orphaned subscription sets")
+
+            orphaned_keys.each do |client_id|
+              # Get channels for this orphaned client
+              channels = redis.smembers("#{namespace}:subscriptions:#{client_id}")
+
+              # Remove in batch
+              redis.pipelined do |pipeline|
+                # Delete client's subscription list
+                pipeline.del("#{namespace}:subscriptions:#{client_id}")
+
+                # Delete each subscription metadata and remove from channel subscribers
+                channels.each do |channel|
+                  pipeline.del("#{namespace}:subscription:#{client_id}:#{channel}")
+                  pipeline.srem("#{namespace}:channels:#{channel}", client_id)
+                end
+
+                # Delete message queue if exists
+                pipeline.del("#{namespace}:messages:#{client_id}")
+              end
+            end
+          end
+        end
+
+        EventMachine.next_tick { callback.call } if callback
+      end
+    rescue => e
+      log_error("Failed to cleanup orphaned subscriptions: #{e.message}")
+      EventMachine.next_tick { callback.call } if callback
     end
 
     def setup_message_routing

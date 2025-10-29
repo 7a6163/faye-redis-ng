@@ -361,4 +361,98 @@ RSpec.describe Faye::Redis do
       end
     end
   end
+
+  describe '#cleanup_expired' do
+    it 'cleans up expired clients and orphaned subscriptions' do
+      em_run do
+        namespace = options[:namespace] || 'faye'
+
+        # Create a client and subscription
+        engine.create_client do |client_id|
+          engine.subscribe(client_id, '/test/channel') do
+            subscriptions_key = "#{namespace}:subscriptions:#{client_id}"
+            subscription_key = "#{namespace}:subscription:#{client_id}:/test/channel"
+            channel_key = "#{namespace}:channels:/test/channel"
+
+            # Manually remove ONLY the client (not subscriptions) to simulate crash
+            engine.connection.with_redis do |redis|
+              redis.del("#{namespace}:clients:#{client_id}")
+              redis.srem("#{namespace}:clients:index", client_id)
+            end
+
+            # Verify orphaned subscription keys still exist
+            engine.connection.with_redis do |redis|
+              expect(redis.exists?(subscriptions_key)).to be_truthy
+              expect(redis.exists?(subscription_key)).to be_truthy
+              expect(redis.sismember(channel_key, client_id)).to be_truthy
+            end
+
+            # Run cleanup
+            engine.cleanup_expired do |count|
+              # Verify orphaned keys are removed
+              engine.connection.with_redis do |redis|
+                expect(redis.exists?(subscriptions_key)).to be_falsey
+                expect(redis.exists?(subscription_key)).to be_falsey
+                expect(redis.sismember(channel_key, client_id)).to be_falsey
+              end
+
+              EM.stop
+            end
+          end
+        end
+      end
+    end
+
+    it 'handles cleanup with no expired clients' do
+      em_run do
+        engine.cleanup_expired do |count|
+          expect(count).to eq(0)
+          EM.stop
+        end
+      end
+    end
+
+    it 'cleans up message queues for orphaned clients' do
+      em_run do
+        namespace = options[:namespace] || 'faye'
+
+        # Create a client
+        engine.create_client do |client_id|
+          engine.subscribe(client_id, '/test') do
+            # Enqueue a message
+            message = { 'channel' => '/test', 'data' => 'test data' }
+            engine.message_queue.enqueue(client_id, message) do
+              messages_key = "#{namespace}:messages:#{client_id}"
+
+              # Verify message queue exists
+              engine.connection.with_redis do |redis|
+                expect(redis.exists?(messages_key)).to be_truthy
+              end
+
+              # Manually remove ONLY the client (not messages) to simulate crash
+              engine.connection.with_redis do |redis|
+                redis.del("#{namespace}:clients:#{client_id}")
+                redis.srem("#{namespace}:clients:index", client_id)
+              end
+
+              # Message queue should still exist (orphaned)
+              engine.connection.with_redis do |redis|
+                expect(redis.exists?(messages_key)).to be_truthy
+              end
+
+              # Run cleanup
+              engine.cleanup_expired do
+                # Verify message queue is removed
+                engine.connection.with_redis do |redis|
+                  expect(redis.exists?(messages_key)).to be_falsey
+                end
+
+                EM.stop
+              end
+            end
+          end
+        end
+      end
+    end
+  end
 end
