@@ -28,7 +28,7 @@ module Faye
       subscription_ttl: 86400,  # Subscription keys TTL (24 hours), provides safety net if GC fails
       namespace: 'faye',
       gc_interval: 60,  # Automatic garbage collection interval (seconds), set to 0 or false to disable
-      cleanup_batch_size: 50  # Number of items to process per batch during cleanup (prevents blocking)
+      cleanup_batch_size: 50  # Number of items per batch during cleanup (min: 1, max: 1000, prevents blocking)
     }.freeze
 
     attr_reader :server, :options, :connection, :client_registry,

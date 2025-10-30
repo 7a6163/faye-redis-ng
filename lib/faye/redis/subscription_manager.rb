@@ -6,6 +6,7 @@ module Faye
       def initialize(connection, options = {})
         @connection = connection
         @options = options
+        @pattern_cache = {}  # Cache compiled regexes for pattern matching performance
       end
 
       # Subscribe a client to a channel
@@ -85,10 +86,15 @@ module Faye
           else
             # Unsubscribe from each channel
             remaining = channels.size
+            callback_called = false  # Prevent race condition
             channels.each do |channel|
               unsubscribe(client_id, channel) do
                 remaining -= 1
-                callback.call(true) if callback && remaining == 0
+                # Check flag to prevent multiple callback invocations
+                if remaining == 0 && !callback_called && callback
+                  callback_called = true
+                  callback.call(true)
+                end
               end
             end
           end
@@ -159,16 +165,26 @@ module Faye
       end
 
       # Check if a channel matches a pattern
+      # Uses memoization to cache compiled regexes for performance
       def channel_matches_pattern?(channel, pattern)
-        # Convert Faye wildcard pattern to regex
-        # * matches one segment, ** matches multiple segments
-        regex_pattern = pattern
-          .gsub('**', '__DOUBLE_STAR__')
-          .gsub('*', '[^/]+')
-          .gsub('__DOUBLE_STAR__', '.*')
+        # Get or compile regex for this pattern
+        regex = @pattern_cache[pattern] ||= begin
+          # Escape the pattern first to handle special regex characters
+          # Then replace escaped wildcards with regex patterns
+          # ** matches multiple segments (including /), * matches one segment (no /)
+          escaped = Regexp.escape(pattern)
 
-        regex = Regexp.new("^#{regex_pattern}$")
+          regex_pattern = escaped
+            .gsub(Regexp.escape('**'), '.*')        # ** → .* (match anything)
+            .gsub(Regexp.escape('*'), '[^/]+')      # * → [^/]+ (match one segment)
+
+          Regexp.new("^#{regex_pattern}$")
+        end
+
         !!(channel =~ regex)
+      rescue RegexpError => e
+        log_error("Invalid pattern #{pattern}: #{e.message}")
+        false
       end
 
       # Clean up subscriptions for a client
@@ -183,6 +199,9 @@ module Faye
         active_set = active_client_ids.to_set
         namespace = @options[:namespace] || 'faye'
         batch_size = @options[:cleanup_batch_size] || 50
+
+        # Validate and clamp batch_size to safe range (1-1000)
+        batch_size = [[batch_size.to_i, 1].max, 1000].min
 
         # Phase 1: Scan for orphaned subscriptions
         scan_orphaned_subscriptions(active_set, namespace) do |orphaned_subscriptions|
@@ -205,24 +224,36 @@ module Faye
       private
 
       # Scan for orphaned subscription keys
+      # Uses batched scanning to avoid holding connection for long periods
       def scan_orphaned_subscriptions(active_set, namespace, &callback)
-        @connection.with_redis do |redis|
-          cursor = "0"
-          orphaned_subscriptions = []
+        orphaned_subscriptions = []
 
-          loop do
-            cursor, keys = redis.scan(cursor, match: "#{namespace}:subscriptions:*", count: 100)
+        # Batch scan to release connection between iterations
+        scan_batch = lambda do |cursor_value|
+          begin
+            @connection.with_redis do |redis|
+              cursor, keys = redis.scan(cursor_value, match: "#{namespace}:subscriptions:*", count: 100)
 
-            keys.each do |key|
-              client_id = key.split(':').last
-              orphaned_subscriptions << client_id unless active_set.include?(client_id)
+              keys.each do |key|
+                client_id = key.split(':').last
+                orphaned_subscriptions << client_id unless active_set.include?(client_id)
+              end
+
+              if cursor == "0"
+                # Scan complete
+                EventMachine.next_tick { callback.call(orphaned_subscriptions) }
+              else
+                # Continue scanning in next tick to release connection
+                EventMachine.next_tick { scan_batch.call(cursor) }
+              end
             end
-
-            break if cursor == "0"
+          rescue => e
+            log_error("Failed to scan orphaned subscriptions batch: #{e.message}")
+            EventMachine.next_tick { callback.call(orphaned_subscriptions) }
           end
-
-          EventMachine.next_tick { callback.call(orphaned_subscriptions) }
         end
+
+        scan_batch.call("0")
       rescue => e
         log_error("Failed to scan orphaned subscriptions: #{e.message}")
         EventMachine.next_tick { callback.call([]) }
@@ -323,6 +354,8 @@ module Faye
                 pipeline.del(channel_subscribers_key(pattern))
               end
             end
+            # Clear unused patterns from regex cache
+            unused_patterns.each { |pattern| @pattern_cache.delete(pattern) }
             puts "[Faye::Redis::SubscriptionManager] INFO: Cleaned up #{unused_patterns.size} unused patterns" if @options[:log_level] != :silent
           end
 
@@ -376,6 +409,8 @@ module Faye
               pipeline.del(channel_subscribers_key(pattern))
             end
           end
+          # Clear unused patterns from regex cache
+          unused_patterns.each { |pattern| @pattern_cache.delete(pattern) }
           puts "[Faye::Redis::SubscriptionManager] INFO: Cleaned up #{unused_patterns.size} unused patterns" if @options[:log_level] != :silent
         end
       rescue => e
@@ -391,6 +426,8 @@ module Faye
           @connection.with_redis do |redis|
             redis.srem(patterns_key, pattern)
           end
+          # Clear pattern from regex cache when it's removed
+          @pattern_cache.delete(pattern)
         end
       rescue => e
         log_error("Failed to cleanup pattern #{pattern}: #{e.message}")

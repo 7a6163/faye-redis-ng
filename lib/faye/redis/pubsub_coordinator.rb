@@ -88,6 +88,7 @@ module Faye
         end
         @subscribed_channels.clear
         @message_handler = nil
+        @reconnect_attempts = 0  # Reset reconnect counter for future connections
       end
 
       private
