@@ -9,7 +9,7 @@ module Faye
       def initialize(connection, options = {})
         @connection = connection
         @options = options
-        @subscribers = []
+        @message_handler = nil  # Single handler to prevent duplication
         @redis_subscriber = nil
         @subscribed_channels = Set.new
         @subscriber_thread = nil
@@ -37,7 +37,10 @@ module Faye
 
       # Subscribe to messages from other servers
       def on_message(&block)
-        @subscribers << block
+        if @message_handler
+          log_error("Warning: Replacing existing message handler to prevent duplication")
+        end
+        @message_handler = block
       end
 
       # Subscribe to a Redis pub/sub channel
@@ -84,7 +87,7 @@ module Faye
           @redis_subscriber = nil
         end
         @subscribed_channels.clear
-        @subscribers.clear
+        @message_handler = nil
       end
 
       private
@@ -166,16 +169,16 @@ module Faye
         begin
           message = JSON.parse(message_json)
 
-          # Notify all subscribers
+          # Notify the message handler
           # Use EventMachine.schedule to safely call from non-EM thread
           # (handle_message is called from subscriber_thread, not EM reactor thread)
           if EventMachine.reactor_running?
             EventMachine.schedule do
-              @subscribers.dup.each do |subscriber|
+              if @message_handler
                 begin
-                  subscriber.call(channel, message)
+                  @message_handler.call(channel, message)
                 rescue => e
-                  log_error("Subscriber callback error for #{channel}: #{e.message}")
+                  log_error("Message handler callback error for #{channel}: #{e.message}")
                 end
               end
             end

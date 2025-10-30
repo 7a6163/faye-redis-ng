@@ -11,14 +11,19 @@ module Faye
       # Subscribe a client to a channel
       def subscribe(client_id, channel, &callback)
         timestamp = Time.now.to_i
+        subscription_ttl = @options[:subscription_ttl] || 86400  # 24 hours default
 
         @connection.with_redis do |redis|
           redis.multi do |multi|
             # Add channel to client's subscriptions
             multi.sadd?(client_subscriptions_key(client_id), channel)
+            # Set/refresh TTL for client subscriptions list
+            multi.expire(client_subscriptions_key(client_id), subscription_ttl)
 
             # Add client to channel's subscribers
             multi.sadd?(channel_subscribers_key(channel), client_id)
+            # Set/refresh TTL for channel subscribers list
+            multi.expire(channel_subscribers_key(channel), subscription_ttl)
 
             # Store subscription metadata
             multi.hset(
@@ -27,10 +32,14 @@ module Faye
               'channel', channel,
               'client_id', client_id
             )
+            # Set TTL for subscription metadata
+            multi.expire(subscription_key(client_id, channel), subscription_ttl)
 
             # Handle wildcard patterns
             if channel.include?('*')
               multi.sadd?(patterns_key, channel)
+              # Set/refresh TTL for patterns set
+              multi.expire(patterns_key, subscription_ttl)
             end
           end
         end
@@ -129,17 +138,21 @@ module Faye
           redis.smembers(patterns_key)
         end
 
-        matching_clients = []
-        patterns.each do |pattern|
-          if channel_matches_pattern?(channel, pattern)
-            clients = @connection.with_redis do |redis|
-              redis.smembers(channel_subscribers_key(pattern))
+        # Filter to only matching patterns first
+        matching_patterns = patterns.select { |pattern| channel_matches_pattern?(channel, pattern) }
+        return [] if matching_patterns.empty?
+
+        # Use pipelining to fetch all matching pattern subscribers in one network round-trip
+        results = @connection.with_redis do |redis|
+          redis.pipelined do |pipeline|
+            matching_patterns.each do |pattern|
+              pipeline.smembers(channel_subscribers_key(pattern))
             end
-            matching_clients.concat(clients)
           end
         end
 
-        matching_clients.uniq
+        # Flatten and deduplicate results
+        results.flatten.uniq
       rescue => e
         log_error("Failed to get pattern subscribers for channel #{channel}: #{e.message}")
         []
@@ -163,7 +176,211 @@ module Faye
         unsubscribe_all(client_id)
       end
 
+      # Comprehensive cleanup of orphaned subscription data
+      # This should be called periodically during garbage collection
+      # Processes in batches to avoid blocking the connection pool
+      def cleanup_orphaned_data(active_client_ids, &callback)
+        active_set = active_client_ids.to_set
+        namespace = @options[:namespace] || 'faye'
+        batch_size = @options[:cleanup_batch_size] || 50
+
+        # Phase 1: Scan for orphaned subscriptions
+        scan_orphaned_subscriptions(active_set, namespace) do |orphaned_subscriptions|
+          # Phase 2: Clean up orphaned subscriptions in batches
+          cleanup_orphaned_subscriptions_batched(orphaned_subscriptions, namespace, batch_size) do
+            # Phase 3: Clean up empty channels (yields between operations)
+            cleanup_empty_channels_async(namespace) do
+              # Phase 4: Clean up unused patterns
+              cleanup_unused_patterns_async do
+                callback.call if callback
+              end
+            end
+          end
+        end
+      rescue => e
+        log_error("Failed to cleanup orphaned data: #{e.message}")
+        EventMachine.next_tick { callback.call } if callback
+      end
+
       private
+
+      # Scan for orphaned subscription keys
+      def scan_orphaned_subscriptions(active_set, namespace, &callback)
+        @connection.with_redis do |redis|
+          cursor = "0"
+          orphaned_subscriptions = []
+
+          loop do
+            cursor, keys = redis.scan(cursor, match: "#{namespace}:subscriptions:*", count: 100)
+
+            keys.each do |key|
+              client_id = key.split(':').last
+              orphaned_subscriptions << client_id unless active_set.include?(client_id)
+            end
+
+            break if cursor == "0"
+          end
+
+          EventMachine.next_tick { callback.call(orphaned_subscriptions) }
+        end
+      rescue => e
+        log_error("Failed to scan orphaned subscriptions: #{e.message}")
+        EventMachine.next_tick { callback.call([]) }
+      end
+
+      # Clean up orphaned subscriptions in batches to avoid blocking
+      def cleanup_orphaned_subscriptions_batched(orphaned_subscriptions, namespace, batch_size, &callback)
+        return EventMachine.next_tick { callback.call } if orphaned_subscriptions.empty?
+
+        total = orphaned_subscriptions.size
+        batches = orphaned_subscriptions.each_slice(batch_size).to_a
+        processed = 0
+
+        process_batch = lambda do |batch_index|
+          if batch_index >= batches.size
+            puts "[Faye::Redis::SubscriptionManager] INFO: Cleaned up #{total} orphaned subscription sets" if @options[:log_level] != :silent
+            EventMachine.next_tick { callback.call }
+            return
+          end
+
+          batch = batches[batch_index]
+
+          @connection.with_redis do |redis|
+            batch.each do |client_id|
+              channels = redis.smembers(client_subscriptions_key(client_id))
+
+              redis.pipelined do |pipeline|
+                pipeline.del(client_subscriptions_key(client_id))
+
+                channels.each do |channel|
+                  pipeline.del(subscription_key(client_id, channel))
+                  pipeline.srem(channel_subscribers_key(channel), client_id)
+                end
+
+                pipeline.del("#{namespace}:messages:#{client_id}")
+              end
+            end
+          end
+
+          processed += batch.size
+
+          # Yield control to EventMachine between batches
+          EventMachine.next_tick { process_batch.call(batch_index + 1) }
+        end
+
+        process_batch.call(0)
+      rescue => e
+        log_error("Failed to cleanup orphaned subscriptions batch: #{e.message}")
+        EventMachine.next_tick { callback.call }
+      end
+
+      # Async version of cleanup_empty_channels that yields between operations
+      def cleanup_empty_channels_async(namespace, &callback)
+        @connection.with_redis do |redis|
+          cursor = "0"
+          empty_channels = []
+
+          loop do
+            cursor, keys = redis.scan(cursor, match: "#{namespace}:channels:*", count: 100)
+
+            keys.each do |key|
+              count = redis.scard(key)
+              empty_channels << key if count == 0
+            end
+
+            break if cursor == "0"
+          end
+
+          if empty_channels.any?
+            redis.pipelined do |pipeline|
+              empty_channels.each { |key| pipeline.del(key) }
+            end
+            puts "[Faye::Redis::SubscriptionManager] INFO: Cleaned up #{empty_channels.size} empty channel Sets" if @options[:log_level] != :silent
+          end
+
+          EventMachine.next_tick { callback.call }
+        end
+      rescue => e
+        log_error("Failed to cleanup empty channels: #{e.message}")
+        EventMachine.next_tick { callback.call }
+      end
+
+      # Async version of cleanup_unused_patterns that yields after completion
+      def cleanup_unused_patterns_async(&callback)
+        @connection.with_redis do |redis|
+          patterns = redis.smembers(patterns_key)
+          unused_patterns = []
+
+          patterns.each do |pattern|
+            count = redis.scard(channel_subscribers_key(pattern))
+            unused_patterns << pattern if count == 0
+          end
+
+          if unused_patterns.any?
+            redis.pipelined do |pipeline|
+              unused_patterns.each do |pattern|
+                pipeline.srem(patterns_key, pattern)
+                pipeline.del(channel_subscribers_key(pattern))
+              end
+            end
+            puts "[Faye::Redis::SubscriptionManager] INFO: Cleaned up #{unused_patterns.size} unused patterns" if @options[:log_level] != :silent
+          end
+
+          EventMachine.next_tick { callback.call }
+        end
+      rescue => e
+        log_error("Failed to cleanup unused patterns: #{e.message}")
+        EventMachine.next_tick { callback.call }
+      end
+
+      # Clean up channel Sets that have no subscribers
+      def cleanup_empty_channels(redis, namespace)
+        cursor = "0"
+        empty_channels = []
+
+        loop do
+          cursor, keys = redis.scan(cursor, match: "#{namespace}:channels:*", count: 100)
+
+          keys.each do |key|
+            count = redis.scard(key)
+            empty_channels << key if count == 0
+          end
+
+          break if cursor == "0"
+        end
+
+        if empty_channels.any?
+          redis.pipelined do |pipeline|
+            empty_channels.each { |key| pipeline.del(key) }
+          end
+          puts "[Faye::Redis::SubscriptionManager] INFO: Cleaned up #{empty_channels.size} empty channel Sets" if @options[:log_level] != :silent
+        end
+      rescue => e
+        log_error("Failed to cleanup empty channels: #{e.message}")
+      end
+
+      # Clean up patterns that have no subscribers
+      def cleanup_unused_patterns(redis)
+        patterns = redis.smembers(patterns_key)
+        unused_patterns = []
+
+        patterns.each do |pattern|
+          count = redis.scard(channel_subscribers_key(pattern))
+          unused_patterns << pattern if count == 0
+        end
+
+        if unused_patterns.any?
+          redis.pipelined do |pipeline|
+            unused_patterns.each do |pattern|
+              pipeline.srem(patterns_key, pattern)
+              pipeline.del(channel_subscribers_key(pattern))
+            end
+          end
+          puts "[Faye::Redis::SubscriptionManager] INFO: Cleaned up #{unused_patterns.size} unused patterns" if @options[:log_level] != :silent
+        end
+      rescue => e
+        log_error("Failed to cleanup unused patterns: #{e.message}")
+      end
 
       def cleanup_pattern_if_unused(pattern)
         subscribers = @connection.with_redis do |redis|

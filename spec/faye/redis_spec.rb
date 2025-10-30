@@ -343,7 +343,7 @@ RSpec.describe Faye::Redis do
     end
 
     it 'sets up message routing in setup_message_routing' do
-      expect(engine.pubsub_coordinator.instance_variable_get(:@subscribers)).not_to be_empty
+      expect(engine.pubsub_coordinator.instance_variable_get(:@message_handler)).not_to be_nil
     end
   end
 

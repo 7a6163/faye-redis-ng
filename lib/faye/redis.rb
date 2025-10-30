@@ -25,8 +25,10 @@ module Faye
       retry_delay: 1,
       client_timeout: 60,
       message_ttl: 3600,
+      subscription_ttl: 86400,  # Subscription keys TTL (24 hours), provides safety net if GC fails
       namespace: 'faye',
-      gc_interval: 60  # Automatic garbage collection interval (seconds), set to 0 or false to disable
+      gc_interval: 60,  # Automatic garbage collection interval (seconds), set to 0 or false to disable
+      cleanup_batch_size: 50  # Number of items to process per batch during cleanup (prevents blocking)
     }.freeze
 
     attr_reader :server, :options, :connection, :client_registry,
@@ -109,12 +111,13 @@ module Faye
         message = message.dup unless message.frozen?
         message['id'] ||= generate_message_id
 
-        # Track this message as locally published
+        # Track this message as locally published with timestamp
         if @local_message_ids
+          timestamp = Time.now.to_i
           if @local_message_ids_mutex
-            @local_message_ids_mutex.synchronize { @local_message_ids.add(message['id']) }
+            @local_message_ids_mutex.synchronize { @local_message_ids[message['id']] = timestamp }
           else
-            @local_message_ids.add(message['id'])
+            @local_message_ids[message['id']] = timestamp
           end
         end
 
@@ -186,13 +189,20 @@ module Faye
 
     # Clean up expired clients and their associated data
     def cleanup_expired(&callback)
+      # Clean up stale local message IDs first
+      cleanup_stale_message_ids
+
       @client_registry.cleanup_expired do |expired_count|
         @logger.info("Cleaned up #{expired_count} expired clients") if expired_count > 0
 
-        # Always clean up orphaned subscription keys (even if no expired clients)
+        # Always clean up orphaned subscription data (even if no expired clients)
         # This handles cases where subscriptions were orphaned due to crashes
-        cleanup_orphaned_subscriptions do
-          callback.call(expired_count) if callback
+        # and removes empty channel Sets and unused patterns
+        # Uses batched processing to avoid blocking the connection pool
+        @client_registry.all do |active_clients|
+          @subscription_manager.cleanup_orphaned_data(active_clients) do
+            callback.call(expired_count) if callback
+          end
         end
       end
     end
@@ -240,65 +250,36 @@ module Faye
       end
     end
 
-    def cleanup_orphaned_subscriptions(&callback)
-      # Get all active client IDs
-      @client_registry.all do |active_clients|
-        active_set = active_clients.to_set
-        namespace = @options[:namespace] || 'faye'
+    # Clean up stale local message IDs (older than 5 minutes)
+    def cleanup_stale_message_ids
+      return unless @local_message_ids
 
-        # Scan for subscription keys and clean up orphaned ones
-        @connection.with_redis do |redis|
-          cursor = "0"
-          orphaned_keys = []
+      cutoff = Time.now.to_i - 300  # 5 minutes
+      stale_count = 0
 
-          loop do
-            cursor, keys = redis.scan(cursor, match: "#{namespace}:subscriptions:*", count: 100)
-
-            keys.each do |key|
-              # Extract client_id from key (format: namespace:subscriptions:client_id)
-              client_id = key.split(':').last
-              orphaned_keys << client_id unless active_set.include?(client_id)
-            end
-
-            break if cursor == "0"
-          end
-
-          # Clean up orphaned subscription data
-          if orphaned_keys.any?
-            @logger.info("Cleaning up #{orphaned_keys.size} orphaned subscription sets")
-
-            orphaned_keys.each do |client_id|
-              # Get channels for this orphaned client
-              channels = redis.smembers("#{namespace}:subscriptions:#{client_id}")
-
-              # Remove in batch
-              redis.pipelined do |pipeline|
-                # Delete client's subscription list
-                pipeline.del("#{namespace}:subscriptions:#{client_id}")
-
-                # Delete each subscription metadata and remove from channel subscribers
-                channels.each do |channel|
-                  pipeline.del("#{namespace}:subscription:#{client_id}:#{channel}")
-                  pipeline.srem("#{namespace}:channels:#{channel}", client_id)
-                end
-
-                # Delete message queue if exists
-                pipeline.del("#{namespace}:messages:#{client_id}")
-              end
-            end
-          end
+      if @local_message_ids_mutex
+        @local_message_ids_mutex.synchronize do
+          initial_size = @local_message_ids.size
+          @local_message_ids.delete_if { |_id, timestamp| timestamp < cutoff }
+          stale_count = initial_size - @local_message_ids.size
         end
+      else
+        initial_size = @local_message_ids.size
+        @local_message_ids.delete_if { |_id, timestamp| timestamp < cutoff }
+        stale_count = initial_size - @local_message_ids.size
+      end
 
-        EventMachine.next_tick { callback.call } if callback
+      if stale_count > 0
+        @logger.info("Cleaned up #{stale_count} stale local message IDs")
       end
     rescue => e
-      log_error("Failed to cleanup orphaned subscriptions: #{e.message}")
-      EventMachine.next_tick { callback.call } if callback
+      log_error("Failed to cleanup stale message IDs: #{e.message}")
     end
 
     def setup_message_routing
-      # Track locally published message IDs to avoid duplicate enqueue
-      @local_message_ids = Set.new
+      # Track locally published message IDs with timestamps to avoid duplicate enqueue
+      # Use Hash to store message_id => timestamp for expiry tracking
+      @local_message_ids = {}
       @local_message_ids_mutex = Mutex.new if defined?(Mutex)
 
       # Subscribe to message events from other servers
@@ -311,10 +292,12 @@ module Faye
         if message_id
           if @local_message_ids_mutex
             @local_message_ids_mutex.synchronize do
-              is_local = @local_message_ids.delete(message_id)
+              # Check existence but don't delete yet (cleanup will handle expiry)
+              # This prevents issues with multi-channel publishes
+              is_local = @local_message_ids.key?(message_id)
             end
           else
-            is_local = @local_message_ids.delete(message_id)
+            is_local = @local_message_ids.key?(message_id)
           end
         end
 

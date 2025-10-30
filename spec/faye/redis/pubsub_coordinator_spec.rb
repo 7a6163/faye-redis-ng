@@ -74,7 +74,7 @@ RSpec.describe Faye::Redis::PubSubCoordinator do
       handler = proc { |channel, message| }
       coordinator.on_message(&handler)
 
-      expect(coordinator.instance_variable_get(:@subscribers)).to include(handler)
+      expect(coordinator.instance_variable_get(:@message_handler)).to eq(handler)
     end
 
     it 'calls handlers when messages are received' do
@@ -127,11 +127,11 @@ RSpec.describe Faye::Redis::PubSubCoordinator do
       end
     end
 
-    it 'clears subscribers' do
+    it 'clears message handler' do
       coordinator.on_message { |channel, message| }
       coordinator.disconnect
 
-      expect(coordinator.instance_variable_get(:@subscribers)).to be_empty
+      expect(coordinator.instance_variable_get(:@message_handler)).to be_nil
     end
 
     it 'clears subscribed channels' do
