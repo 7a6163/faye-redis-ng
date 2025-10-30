@@ -105,34 +105,68 @@ module Faye
       channels = [channels] unless channels.is_a?(Array)
 
       begin
-        remaining_operations = channels.size
-        success = true
+        # Ensure message has an ID for deduplication
+        message = message.dup unless message.frozen?
+        message['id'] ||= generate_message_id
+
+        # Track this message as locally published
+        if @local_message_ids
+          if @local_message_ids_mutex
+            @local_message_ids_mutex.synchronize { @local_message_ids.add(message['id']) }
+          else
+            @local_message_ids.add(message['id'])
+          end
+        end
+
+        total_channels = channels.size
+        completed_channels = 0
+        callback_called = false
+        all_success = true
 
         channels.each do |channel|
           # Get subscribers and process in parallel
           @subscription_manager.get_subscribers(channel) do |client_ids|
-            # Immediately publish to pub/sub (don't wait for enqueue)
-            @pubsub_coordinator.publish(channel, message) do |published|
-              success &&= published
-            end
+            # Track operations for this channel
+            pending_ops = 2  # pubsub + enqueue
+            channel_success = true
+            ops_completed = 0
 
-            # Enqueue for all subscribed clients in parallel (batch operation)
-            if client_ids.any?
-              enqueue_messages_batch(client_ids, message) do |enqueued|
-                success &&= enqueued
+            complete_channel = lambda do
+              ops_completed += 1
+              if ops_completed == pending_ops
+                # This channel is complete
+                all_success &&= channel_success
+                completed_channels += 1
+
+                # Call final callback when all channels are done
+                if completed_channels == total_channels && !callback_called && callback
+                  callback_called = true
+                  EventMachine.next_tick { callback.call(all_success) }
+                end
               end
             end
 
-            # Track completion
-            remaining_operations -= 1
-            if remaining_operations == 0 && callback
-              EventMachine.next_tick { callback.call(success) }
+            # Publish to pub/sub
+            @pubsub_coordinator.publish(channel, message) do |published|
+              channel_success &&= published
+              complete_channel.call
+            end
+
+            # Enqueue for all subscribed clients
+            if client_ids.any?
+              enqueue_messages_batch(client_ids, message) do |enqueued|
+                channel_success &&= enqueued
+                complete_channel.call
+              end
+            else
+              # No clients, but still need to complete
+              complete_channel.call
             end
           end
         end
       rescue => e
         log_error("Failed to publish message to channels #{channels}: #{e.message}")
-        EventMachine.next_tick { callback.call(false) } if callback
+        EventMachine.next_tick { callback.call(false) } if callback && !callback_called
       end
     end
 
@@ -169,9 +203,20 @@ module Faye
       SecureRandom.uuid
     end
 
+    def generate_message_id
+      SecureRandom.uuid
+    end
+
     # Batch enqueue messages to multiple clients using a single Redis pipeline
     def enqueue_messages_batch(client_ids, message, &callback)
-      return EventMachine.next_tick { callback.call(true) } if client_ids.empty? || !callback
+      # Handle empty client list
+      if client_ids.empty?
+        EventMachine.next_tick { callback.call(true) } if callback
+        return
+      end
+
+      # No callback provided, but still need to enqueue
+      # (setup_message_routing calls this without callback)
 
       message_json = message.to_json
       message_ttl = @options[:message_ttl] || 3600
@@ -252,10 +297,31 @@ module Faye
     end
 
     def setup_message_routing
+      # Track locally published message IDs to avoid duplicate enqueue
+      @local_message_ids = Set.new
+      @local_message_ids_mutex = Mutex.new if defined?(Mutex)
+
       # Subscribe to message events from other servers
       @pubsub_coordinator.on_message do |channel, message|
+        # Skip if this is a message we just published locally
+        # (Redis pub/sub echoes back messages to the publisher)
+        message_id = message['id']
+        is_local = false
+
+        if message_id
+          if @local_message_ids_mutex
+            @local_message_ids_mutex.synchronize do
+              is_local = @local_message_ids.delete(message_id)
+            end
+          else
+            is_local = @local_message_ids.delete(message_id)
+          end
+        end
+
+        next if is_local
+
+        # Enqueue for remote servers' messages only
         @subscription_manager.get_subscribers(channel) do |client_ids|
-          # Use batch enqueue for better performance
           enqueue_messages_batch(client_ids, message) if client_ids.any?
         end
       end

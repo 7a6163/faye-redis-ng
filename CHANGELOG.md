@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.7] - 2025-10-30
+
+### Fixed
+- **Critical: Publish Race Condition**: Fixed race condition in `publish` method where callback could be called multiple times
+  - Added `callback_called` flag to prevent duplicate callback invocations
+  - Properly track completion of all async operations before calling final callback
+  - Ensures `success` status is correctly aggregated from all operations
+  - **Impact**: Eliminates unreliable message delivery status in high-concurrency scenarios
+
+- **Critical: Thread Safety Issue**: Fixed thread safety issue in PubSubCoordinator message handling
+  - Changed `EventMachine.next_tick` to `EventMachine.schedule` for cross-thread safety
+  - Added reactor running check before scheduling
+  - Added error handling for subscriber callbacks
+  - **Impact**: Prevents undefined behavior when messages arrive from Redis pub/sub thread
+
+- **Message Deduplication**: Fixed duplicate message enqueue issue
+  - Local published messages were being enqueued twice (local + pub/sub echo)
+  - Added message ID tracking to filter out locally published messages from pub/sub
+  - Messages now include unique IDs for deduplication
+  - **Impact**: Eliminates duplicate messages in single-server deployments
+
+- **Batch Enqueue Logic**: Fixed `enqueue_messages_batch` to handle nil callbacks correctly
+  - Separated empty client list check from callback check
+  - Allows batch enqueue without callback (used by setup_message_routing)
+  - **Impact**: Fixes NoMethodError when enqueue is called without callback
+
+### Added
+- **Concurrency Test Suite**: Added comprehensive concurrency tests (spec/faye/redis_concurrency_spec.rb)
+  - Tests for callback guarantee (single invocation)
+  - Tests for concurrent publish operations
+  - Tests for multi-channel publishing
+  - Tests for error handling
+  - Stress test with 50 rapid publishes
+  - Thread safety tests
+
+### Technical Details
+**Publish Race Condition Fix**:
+- Before: Multiple async callbacks could decrement counter and call callback multiple times
+- After: Track completion with callback_called flag, ensure atomic callback invocation
+
+**Thread Safety Fix**:
+- Before: `EventMachine.next_tick` called from Redis subscriber thread (unsafe)
+- After: `EventMachine.schedule` safely queues work from any thread to EM reactor
+
+**Message Deduplication**:
+- Before: Message published locally → enqueued → published to Redis → received back → enqueued again
+- After: Track local message IDs, filter out self-published messages from pub/sub
+
 ## [1.0.6] - 2025-10-30
 
 ### Added
@@ -151,7 +199,8 @@ For 100 subscribers receiving one message:
 ### Security
 - Client and message IDs now use `SecureRandom.uuid` instead of predictable time-based generation
 
-[Unreleased]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.6...HEAD
+[Unreleased]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.7...HEAD
+[1.0.7]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.6...v1.0.7
 [1.0.6]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.3...v1.0.4

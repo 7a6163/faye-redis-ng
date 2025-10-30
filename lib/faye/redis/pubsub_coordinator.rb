@@ -166,11 +166,21 @@ module Faye
         begin
           message = JSON.parse(message_json)
 
-          # Notify all subscribers (use dup to avoid concurrent modification)
-          EventMachine.next_tick do
-            @subscribers.dup.each do |subscriber|
-              subscriber.call(channel, message)
+          # Notify all subscribers
+          # Use EventMachine.schedule to safely call from non-EM thread
+          # (handle_message is called from subscriber_thread, not EM reactor thread)
+          if EventMachine.reactor_running?
+            EventMachine.schedule do
+              @subscribers.dup.each do |subscriber|
+                begin
+                  subscriber.call(channel, message)
+                rescue => e
+                  log_error("Subscriber callback error for #{channel}: #{e.message}")
+                end
+              end
             end
+          else
+            log_error("Cannot handle message: EventMachine reactor not running")
           end
         rescue JSON::ParserError => e
           log_error("Failed to parse message from #{channel}: #{e.message}")
