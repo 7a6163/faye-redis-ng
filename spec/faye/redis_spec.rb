@@ -362,6 +362,68 @@ RSpec.describe Faye::Redis do
     end
   end
 
+  describe 'automatic garbage collection' do
+    it 'starts GC timer by default with 60 second interval' do
+      em_run do
+        new_engine = described_class.new(server, options)
+        expect(new_engine.instance_variable_get(:@gc_timer)).not_to be_nil
+        new_engine.disconnect
+        EM.stop
+      end
+    end
+
+    it 'does not start GC timer when gc_interval is 0' do
+      em_run do
+        new_engine = described_class.new(server, options.merge(gc_interval: 0))
+        expect(new_engine.instance_variable_get(:@gc_timer)).to be_nil
+        new_engine.disconnect
+        EM.stop
+      end
+    end
+
+    it 'does not start GC timer when gc_interval is false' do
+      em_run do
+        new_engine = described_class.new(server, options.merge(gc_interval: false))
+        expect(new_engine.instance_variable_get(:@gc_timer)).to be_nil
+        new_engine.disconnect
+        EM.stop
+      end
+    end
+
+    it 'runs cleanup_expired periodically' do
+      em_run do
+        # Use a short interval for testing (0.5 seconds)
+        new_engine = described_class.new(server, options.merge(gc_interval: 0.5))
+
+        # Track cleanup calls
+        cleanup_count = 0
+        allow(new_engine).to receive(:cleanup_expired).and_wrap_original do |method, &block|
+          cleanup_count += 1
+          method.call(&block)
+        end
+
+        # Wait for at least 2 GC cycles
+        EM.add_timer(1.2) do
+          expect(cleanup_count).to be >= 2
+          new_engine.disconnect
+          EM.stop
+        end
+      end
+    end
+
+    it 'stops GC timer on disconnect' do
+      em_run do
+        new_engine = described_class.new(server, options)
+        timer = new_engine.instance_variable_get(:@gc_timer)
+        expect(timer).not_to be_nil
+
+        new_engine.disconnect
+        expect(new_engine.instance_variable_get(:@gc_timer)).to be_nil
+        EM.stop
+      end
+    end
+  end
+
   describe '#cleanup_expired' do
     it 'cleans up expired clients and orphaned subscriptions' do
       em_run do

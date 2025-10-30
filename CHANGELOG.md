@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.6] - 2025-10-30
+
+### Added
+- **Automatic Garbage Collection**: Implemented automatic GC timer that runs periodically to clean up expired clients and orphaned data
+  - New `gc_interval` configuration option (default: 60 seconds)
+  - Automatically starts when EventMachine is running
+  - Can be disabled by setting `gc_interval` to 0 or false
+  - Lazy initialization ensures timer starts even if engine is created before EventMachine starts
+  - Timer is properly stopped on disconnect to prevent resource leaks
+
+### Changed
+- **Improved User Experience**: No longer requires manual setup of periodic cleanup
+  - Memory leak prevention is now automatic by default
+  - Matches behavior of original faye-redis-ruby project
+  - Users can still manually call `cleanup_expired` if needed
+  - Custom GC schedules possible by disabling automatic GC
+
+### Technical Details
+The automatic GC timer:
+- Runs `cleanup_expired` every 60 seconds by default
+- Only starts when EventMachine reactor is running
+- Supports lazy initialization for engines created outside EM context
+- Properly handles cleanup on disconnect
+- Can be customized or disabled via `gc_interval` option
+
 ## [1.0.5] - 2025-10-30
 
 ### Fixed
@@ -126,7 +151,8 @@ For 100 subscribers receiving one message:
 ### Security
 - Client and message IDs now use `SecureRandom.uuid` instead of predictable time-based generation
 
-[Unreleased]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.5...HEAD
+[Unreleased]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.6...HEAD
+[1.0.6]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.2...v1.0.3

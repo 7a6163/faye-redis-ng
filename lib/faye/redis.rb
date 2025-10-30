@@ -25,7 +25,8 @@ module Faye
       retry_delay: 1,
       client_timeout: 60,
       message_ttl: 3600,
-      namespace: 'faye'
+      namespace: 'faye',
+      gc_interval: 60  # Automatic garbage collection interval (seconds), set to 0 or false to disable
     }.freeze
 
     attr_reader :server, :options, :connection, :client_registry,
@@ -50,10 +51,16 @@ module Faye
 
       # Set up message routing
       setup_message_routing
+
+      # Start automatic garbage collection timer
+      start_gc_timer
     end
 
     # Create a new client
     def create_client(&callback)
+      # Ensure GC timer is started (lazy initialization)
+      ensure_gc_timer_started
+
       client_id = generate_client_id
       @client_registry.create(client_id) do |success|
         if success
@@ -136,6 +143,9 @@ module Faye
 
     # Disconnect the engine
     def disconnect
+      # Stop GC timer if running
+      stop_gc_timer
+
       @pubsub_coordinator.disconnect
       @connection.disconnect
     end
@@ -253,6 +263,43 @@ module Faye
 
     def log_error(message)
       @logger.error(message)
+    end
+
+    # Start automatic garbage collection timer
+    def start_gc_timer
+      gc_interval = @options[:gc_interval]
+
+      # Skip if GC is disabled (0, false, or nil)
+      return if !gc_interval || gc_interval == 0
+
+      # Only start timer if EventMachine is running
+      return unless EventMachine.reactor_running?
+
+      @logger.info("Starting automatic GC timer with interval: #{gc_interval} seconds")
+
+      @gc_timer = EventMachine.add_periodic_timer(gc_interval) do
+        @logger.debug("Running automatic garbage collection")
+        cleanup_expired do |count|
+          @logger.debug("GC completed: #{count} expired clients cleaned") if count > 0
+        end
+      end
+    end
+
+    # Ensure GC timer is started (called lazily on first operation)
+    def ensure_gc_timer_started
+      return if @gc_timer  # Already started
+      return if !@options[:gc_interval] || @options[:gc_interval] == 0  # Disabled
+
+      start_gc_timer
+    end
+
+    # Stop automatic garbage collection timer
+    def stop_gc_timer
+      if @gc_timer
+        EventMachine.cancel_timer(@gc_timer)
+        @gc_timer = nil
+        @logger.info("Stopped automatic GC timer")
+      end
     end
   end
 end

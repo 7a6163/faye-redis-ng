@@ -81,6 +81,9 @@ bayeux = Faye::RackAdapter.new(app, {
   client_timeout: 60,         # Client session timeout (seconds)
   message_ttl: 3600,          # Message TTL (seconds)
 
+  # Garbage collection
+  gc_interval: 60,            # Automatic GC interval (seconds), set to 0 or false to disable
+
   # Logging
   log_level: :info,           # Log level (:silent, :info, :debug)
 
@@ -236,11 +239,45 @@ The CI/CD pipeline will automatically:
 
 ## Memory Management
 
-### Cleaning Up Expired Clients
+### Automatic Garbage Collection
 
-To prevent memory leaks from orphaned subscription keys, you should periodically clean up expired clients:
+**New in v1.0.6**: faye-redis-ng now includes automatic garbage collection that runs every 60 seconds by default. This automatically cleans up expired clients and orphaned subscription keys, preventing memory leaks without any manual intervention.
 
-#### Manual Cleanup
+```ruby
+bayeux = Faye::RackAdapter.new(app, {
+  mount: '/faye',
+  timeout: 25,
+  engine: {
+    type: Faye::Redis,
+    host: 'localhost',
+    port: 6379,
+    gc_interval: 60  # Run GC every 60 seconds (default)
+  }
+})
+```
+
+To customize the GC interval or disable it:
+
+```ruby
+engine: {
+  type: Faye::Redis,
+  host: 'localhost',
+  port: 6379,
+  gc_interval: 300  # Run GC every 5 minutes
+}
+
+# Or disable automatic GC
+engine: {
+  type: Faye::Redis,
+  host: 'localhost',
+  port: 6379,
+  gc_interval: 0  # Disabled - you'll need to call cleanup_expired manually
+}
+```
+
+### Manual Cleanup
+
+If you've disabled automatic GC, you can manually clean up expired clients:
 
 ```ruby
 # Get the engine instance
@@ -252,9 +289,9 @@ engine.cleanup_expired do |expired_count|
 end
 ```
 
-#### Automatic Periodic Cleanup (Recommended)
+#### Custom GC Schedule (Optional)
 
-Add this to your Faye server setup:
+If you need more control, you can disable automatic GC and implement your own schedule:
 
 ```ruby
 require 'eventmachine'
@@ -268,11 +305,12 @@ bayeux = Faye::RackAdapter.new(app, {
     type: Faye::Redis,
     host: 'localhost',
     port: 6379,
-    namespace: 'my-app'
+    namespace: 'my-app',
+    gc_interval: 0  # Disable automatic GC
   }
 })
 
-# Schedule automatic cleanup every 5 minutes
+# Custom cleanup schedule - every 5 minutes
 EM.add_periodic_timer(300) do
   bayeux.get_engine.cleanup_expired do |count|
     puts "[#{Time.now}] Cleaned up #{count} expired clients" if count > 0
@@ -330,12 +368,15 @@ The `cleanup_expired` method removes:
 
 ### Memory Leak Prevention
 
-Without periodic cleanup, abnormal client disconnections (crashes, network failures, etc.) can cause orphaned keys to accumulate:
+**v1.0.6+**: Automatic garbage collection is now enabled by default, preventing memory leaks from orphaned keys without any configuration needed.
 
-- **Before fix**: 10,000 orphaned clients × 5 channels = 50,000+ keys = 100-500 MB leaked
-- **After fix**: All orphaned keys are cleaned up automatically
+Without GC, abnormal client disconnections (crashes, network failures, etc.) can cause orphaned keys to accumulate:
 
-**Recommendation**: Schedule cleanup every 5-10 minutes in production environments.
+- **Before v1.0.5**: 10,000 orphaned clients × 5 channels = 50,000+ keys = 100-500 MB leaked
+- **v1.0.5**: Manual cleanup required via `cleanup_expired` method
+- **v1.0.6+**: Automatic GC runs every 60 seconds by default - no manual intervention needed
+
+The automatic GC ensures memory usage remains stable even with frequent client disconnections.
 
 ## Troubleshooting
 
