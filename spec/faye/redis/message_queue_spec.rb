@@ -310,4 +310,71 @@ RSpec.describe Faye::Redis::MessageQueue do
       end
     end
   end
+
+  describe 'TTL behavior (v1.0.10)' do
+    it 'sets TTL on first enqueue' do
+      em_run do
+        queue.enqueue('client-1', message) do |success|
+          expect(success).to be true
+          # Need a small delay to ensure Redis write completes
+          EM.add_timer(0.01) do
+            connection.with_redis do |redis|
+              ttl = redis.ttl('test:messages:client-1')
+              expect(ttl).to be > 0
+              expect(ttl).to be <= 3600
+              EM.stop
+            end
+          end
+        end
+      end
+    end
+
+    it 'does not reset TTL on subsequent enqueues' do
+      em_run do
+        queue.enqueue('client-1', message) do
+          # Get initial TTL
+          connection.with_redis do |redis|
+            initial_ttl = redis.ttl('test:messages:client-1')
+
+            # Wait a bit and enqueue another message
+            EM.add_timer(1) do
+              queue.enqueue('client-1', message) do
+                connection.with_redis do |redis|
+                  new_ttl = redis.ttl('test:messages:client-1')
+
+                  # TTL should be less than or equal to initial TTL (time has passed)
+                  # NOT reset to full 3600 seconds
+                  expect(new_ttl).to be <= initial_ttl
+                  expect(new_ttl).to be < 3600
+                  EM.stop
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+
+    it 'sets TTL again after queue expires and is recreated' do
+      queue_with_short_ttl = described_class.new(connection, test_redis_options.merge(message_ttl: 2))
+
+      em_run do
+        queue_with_short_ttl.enqueue('client-1', message) do
+          # Wait for TTL to expire
+          EM.add_timer(3) do
+            # Enqueue again after expiration
+            queue_with_short_ttl.enqueue('client-1', message) do
+              connection.with_redis do |redis|
+                ttl = redis.ttl('test:messages:client-1')
+                # Should have fresh TTL since key was recreated
+                expect(ttl).to be > 0
+                expect(ttl).to be <= 2
+                EM.stop
+              end
+            end
+          end
+        end
+      end
+    end
+  end
 end

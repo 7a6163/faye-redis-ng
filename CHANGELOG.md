@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.10] - 2025-10-30
+
+### Fixed - Critical Memory Leak (P0 - Critical Priority)
+- **TTL Reset on Every Operation**: Fixed message queue and subscription TTL being reset on every operation
+  - **Problem**: `EXPIRE` was called on every `enqueue` and `subscribe`, resetting TTL to full duration
+  - **Impact**: Hot/active queues and subscriptions never expired, causing unbounded memory growth
+  - **Solution**: Implemented Lua scripts to only set TTL if key has no TTL (TTL == -1)
+  - Message queues: `enqueue` now checks TTL before setting expiration
+  - Subscriptions: `subscribe` now checks TTL before setting expiration on all keys:
+    - `faye:subscriptions:{client_id}` (SET)
+    - `faye:channels:{channel}` (SET)
+    - `faye:subscription:{client_id}:{channel}` (Hash)
+    - `faye:patterns` (SET)
+  - **Impact**: Prevents memory leak for active clients with frequent messages/re-subscriptions
+
+- **Orphaned Message Queue Cleanup**: Added dedicated cleanup for orphaned message queues
+  - Added `cleanup_orphaned_message_queues_async` to scan and remove orphaned message queues
+  - Added `cleanup_message_queues_batched` for batched deletion with EventMachine yielding
+  - Integrated into `cleanup_orphaned_data` workflow (Phase 3)
+  - **Impact**: Ensures message queues are cleaned up even if subscription cleanup misses them
+
+### Added
+- Lua script-based TTL management for atomic operations
+- Comprehensive TTL behavior tests (3 new tests):
+  - `sets TTL on first enqueue`
+  - `does not reset TTL on subsequent enqueues`
+  - `sets TTL again after queue expires and is recreated`
+
+### Changed
+- `MessageQueue#enqueue`: Uses Lua script to prevent TTL reset
+- `SubscriptionManager#subscribe`: Uses Lua script to prevent TTL reset on all subscription keys
+- `SubscriptionManager#cleanup_orphaned_data`: Added Phase 3 for message queue cleanup
+
+### Technical Details
+**Lua Script Approach**:
+```lua
+redis.call('RPUSH', KEYS[1], ARGV[1])
+local ttl = redis.call('TTL', KEYS[1])
+if ttl == -1 then  -- Only set if no TTL exists
+  redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+end
+```
+
+**Test Coverage**: 213 examples, 0 failures, 87.22% line coverage
+
 ## [1.0.9] - 2025-10-30
 
 ### Fixed - Concurrency Issues (P1 - High Priority)

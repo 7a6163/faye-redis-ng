@@ -14,34 +14,48 @@ module Faye
         timestamp = Time.now.to_i
         subscription_ttl = @options[:subscription_ttl] || 86400  # 24 hours default
 
+        client_subs_key = client_subscriptions_key(client_id)
+        channel_subs_key = channel_subscribers_key(channel)
+        sub_key = subscription_key(client_id, channel)
+
         @connection.with_redis do |redis|
-          redis.multi do |multi|
-            # Add channel to client's subscriptions
-            multi.sadd?(client_subscriptions_key(client_id), channel)
-            # Set/refresh TTL for client subscriptions list
-            multi.expire(client_subscriptions_key(client_id), subscription_ttl)
-
-            # Add client to channel's subscribers
-            multi.sadd?(channel_subscribers_key(channel), client_id)
-            # Set/refresh TTL for channel subscribers list
-            multi.expire(channel_subscribers_key(channel), subscription_ttl)
-
-            # Store subscription metadata
-            multi.hset(
-              subscription_key(client_id, channel),
-              'subscribed_at', timestamp,
-              'channel', channel,
-              'client_id', client_id
-            )
-            # Set TTL for subscription metadata
-            multi.expire(subscription_key(client_id, channel), subscription_ttl)
-
-            # Handle wildcard patterns
-            if channel.include?('*')
-              multi.sadd?(patterns_key, channel)
-              # Set/refresh TTL for patterns set
-              multi.expire(patterns_key, subscription_ttl)
+          # Use Lua script to atomically add subscriptions and set TTL only if keys have no TTL
+          # This prevents resetting TTL on re-subscription
+          redis.eval(<<-LUA, keys: [client_subs_key, channel_subs_key, sub_key], argv: [channel, client_id, timestamp.to_s, subscription_ttl])
+            -- Add channel to client's subscriptions
+            redis.call('SADD', KEYS[1], ARGV[1])
+            local ttl1 = redis.call('TTL', KEYS[1])
+            if ttl1 == -1 then
+              redis.call('EXPIRE', KEYS[1], ARGV[4])
             end
+
+            -- Add client to channel's subscribers
+            redis.call('SADD', KEYS[2], ARGV[2])
+            local ttl2 = redis.call('TTL', KEYS[2])
+            if ttl2 == -1 then
+              redis.call('EXPIRE', KEYS[2], ARGV[4])
+            end
+
+            -- Store subscription metadata
+            redis.call('HSET', KEYS[3], 'subscribed_at', ARGV[3], 'channel', ARGV[1], 'client_id', ARGV[2])
+            local ttl3 = redis.call('TTL', KEYS[3])
+            if ttl3 == -1 then
+              redis.call('EXPIRE', KEYS[3], ARGV[4])
+            end
+
+            return 1
+          LUA
+
+          # Handle wildcard patterns separately
+          if channel.include?('*')
+            redis.eval(<<-LUA, keys: [patterns_key], argv: [channel, subscription_ttl])
+              redis.call('SADD', KEYS[1], ARGV[1])
+              local ttl = redis.call('TTL', KEYS[1])
+              if ttl == -1 then
+                redis.call('EXPIRE', KEYS[1], ARGV[2])
+              end
+              return 1
+            LUA
           end
         end
 
@@ -207,11 +221,14 @@ module Faye
         scan_orphaned_subscriptions(active_set, namespace) do |orphaned_subscriptions|
           # Phase 2: Clean up orphaned subscriptions in batches
           cleanup_orphaned_subscriptions_batched(orphaned_subscriptions, namespace, batch_size) do
-            # Phase 3: Clean up empty channels (yields between operations)
-            cleanup_empty_channels_async(namespace) do
-              # Phase 4: Clean up unused patterns
-              cleanup_unused_patterns_async do
-                callback.call if callback
+            # Phase 3: Clean up orphaned message queues
+            cleanup_orphaned_message_queues_async(active_set, namespace, batch_size) do
+              # Phase 4: Clean up empty channels (yields between operations)
+              cleanup_empty_channels_async(namespace) do
+                # Phase 5: Clean up unused patterns
+                cleanup_unused_patterns_async do
+                  callback.call if callback
+                end
               end
             end
           end
@@ -302,6 +319,80 @@ module Faye
         process_batch.call(0)
       rescue => e
         log_error("Failed to cleanup orphaned subscriptions batch: #{e.message}")
+        EventMachine.next_tick { callback.call }
+      end
+
+      # Clean up orphaned message queues for non-existent clients
+      # Scans for message queues that belong to clients not in the active set
+      def cleanup_orphaned_message_queues_async(active_set, namespace, batch_size, &callback)
+        orphaned_queues = []
+
+        # Batch scan to avoid holding connection
+        scan_batch = lambda do |cursor_value|
+          begin
+            @connection.with_redis do |redis|
+              cursor, keys = redis.scan(cursor_value, match: "#{namespace}:messages:*", count: 100)
+
+              keys.each do |key|
+                client_id = key.split(':').last
+                orphaned_queues << key unless active_set.include?(client_id)
+              end
+
+              if cursor == "0"
+                # Scan complete, now clean up in batches
+                if orphaned_queues.any?
+                  cleanup_message_queues_batched(orphaned_queues, batch_size) do
+                    EventMachine.next_tick { callback.call }
+                  end
+                else
+                  EventMachine.next_tick { callback.call }
+                end
+              else
+                # Continue scanning
+                EventMachine.next_tick { scan_batch.call(cursor) }
+              end
+            end
+          rescue => e
+            log_error("Failed to scan orphaned message queues: #{e.message}")
+            EventMachine.next_tick { callback.call }
+          end
+        end
+
+        scan_batch.call("0")
+      rescue => e
+        log_error("Failed to cleanup orphaned message queues: #{e.message}")
+        EventMachine.next_tick { callback.call }
+      end
+
+      # Delete message queues in batches
+      def cleanup_message_queues_batched(queue_keys, batch_size, &callback)
+        return EventMachine.next_tick { callback.call } if queue_keys.empty?
+
+        total = queue_keys.size
+        batches = queue_keys.each_slice(batch_size).to_a
+
+        process_batch = lambda do |batch_index|
+          if batch_index >= batches.size
+            puts "[Faye::Redis::SubscriptionManager] INFO: Cleaned up #{total} orphaned message queues" if @options[:log_level] != :silent
+            EventMachine.next_tick { callback.call }
+            return
+          end
+
+          batch = batches[batch_index]
+
+          @connection.with_redis do |redis|
+            redis.pipelined do |pipeline|
+              batch.each { |key| pipeline.del(key) }
+            end
+          end
+
+          # Yield control between batches
+          EventMachine.next_tick { process_batch.call(batch_index + 1) }
+        end
+
+        process_batch.call(0)
+      rescue => e
+        log_error("Failed to cleanup message queues batch: #{e.message}")
         EventMachine.next_tick { callback.call }
       end
 

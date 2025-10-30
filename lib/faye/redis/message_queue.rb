@@ -19,15 +19,19 @@ module Faye
 
         # Store message directly as JSON
         message_json = message_with_id.to_json
+        key = queue_key(client_id)
 
         @connection.with_redis do |redis|
-          # Use RPUSH with EXPIRE in a single pipeline
-          redis.pipelined do |pipeline|
-            # Add message to client's queue
-            pipeline.rpush(queue_key(client_id), message_json)
-            # Set TTL on queue (only if it doesn't already have one)
-            pipeline.expire(queue_key(client_id), message_ttl)
-          end
+          # Use Lua script to atomically RPUSH and set TTL only if key has no TTL
+          # This prevents resetting TTL on every enqueue for hot queues
+          redis.eval(<<~LUA, keys: [key], argv: [message_json, message_ttl.to_s])
+            redis.call('RPUSH', KEYS[1], ARGV[1])
+            local ttl = redis.call('TTL', KEYS[1])
+            if ttl == -1 then
+              redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
+            end
+            return 1
+          LUA
         end
 
         EventMachine.next_tick { callback.call(true) } if callback
