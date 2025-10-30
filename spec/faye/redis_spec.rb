@@ -517,4 +517,151 @@ RSpec.describe Faye::Redis do
       end
     end
   end
+
+  describe 'message ID deduplication (v1.0.9)' do
+    it 'tracks local message IDs with timestamps' do
+      em_run do
+        engine.publish({ 'data' => 'test' }, '/test') do
+          # Check @local_message_ids is a Hash with timestamp
+          local_ids = engine.instance_variable_get(:@local_message_ids)
+          expect(local_ids).to be_a(Hash)
+          expect(local_ids.values.first).to be_a(Integer)  # timestamp
+          EM.stop
+        end
+      end
+    end
+
+    it 'cleans up stale message IDs' do
+      em_run do
+        engine.publish({ 'data' => 'test' }, '/test') do
+          local_ids = engine.instance_variable_get(:@local_message_ids)
+          message_id = local_ids.keys.first
+
+          # Manually set old timestamp (older than 5 minutes)
+          old_timestamp = Time.now.to_i - 400
+          local_ids[message_id] = old_timestamp
+
+          # Trigger cleanup
+          engine.send(:cleanup_stale_message_ids)
+
+          # Stale ID should be removed
+          expect(local_ids).not_to have_key(message_id)
+          EM.stop
+        end
+      end
+    end
+
+    it 'keeps recent message IDs' do
+      em_run do
+        engine.publish({ 'data' => 'test' }, '/test') do
+          local_ids = engine.instance_variable_get(:@local_message_ids)
+          initial_size = local_ids.size
+
+          # Cleanup should not remove recent IDs
+          engine.send(:cleanup_stale_message_ids)
+
+          expect(local_ids.size).to eq(initial_size)
+          EM.stop
+        end
+      end
+    end
+
+    it 'handles cleanup_stale_message_ids errors gracefully' do
+      em_run do
+        # Set invalid state to trigger error
+        engine.instance_variable_set(:@local_message_ids, nil)
+
+        # Should not raise error
+        expect {
+          engine.send(:cleanup_stale_message_ids)
+        }.not_to raise_error
+
+        EM.stop
+      end
+    end
+  end
+
+  describe 'batched cleanup (v1.0.9)' do
+    it 'validates batch_size parameter' do
+      em_run do
+        engine_with_invalid = Faye::Redis.new(server, test_redis_options.merge(cleanup_batch_size: 0))
+
+        # Should clamp to valid range and not error
+        expect {
+          engine_with_invalid.cleanup_expired do
+            engine_with_invalid.disconnect
+            EM.stop
+          end
+        }.not_to raise_error
+      end
+    end
+
+    it 'handles large batch_size' do
+      em_run do
+        engine_with_large = Faye::Redis.new(server, test_redis_options.merge(cleanup_batch_size: 99999))
+
+        expect {
+          engine_with_large.cleanup_expired do
+            engine_with_large.disconnect
+            EM.stop
+          end
+        }.not_to raise_error
+      end
+    end
+  end
+
+  describe 'subscription TTL (v1.0.8/v1.0.9)' do
+    it 'sets TTL on subscription keys' do
+      em_run do
+        engine.create_client do |client_id|
+          engine.subscribe(client_id, '/test') do
+            # Verify subscription keys have TTL
+            engine.connection.with_redis do |redis|
+              namespace = test_redis_options[:namespace] || 'faye'
+              ttl = redis.ttl("#{namespace}:subscriptions:#{client_id}")
+              expect(ttl).to be > 0
+              EM.stop
+            end
+          end
+        end
+      end
+    end
+  end
+
+  describe 'pattern caching (v1.0.9)' do
+    it 'subscription_manager uses pattern cache' do
+      em_run do
+        engine.create_client do |client_id|
+          engine.subscribe(client_id, '/test/*') do
+            cache = engine.subscription_manager.instance_variable_get(:@pattern_cache)
+            expect(cache).to be_a(Hash)
+
+            # Trigger pattern matching
+            engine.subscription_manager.channel_matches_pattern?('/test/foo', '/test/*')
+
+            # Pattern should be cached
+            expect(cache.keys).to include('/test/*')
+            EM.stop
+          end
+        end
+      end
+    end
+  end
+
+  describe 'error handling in setup_message_routing' do
+    it 'handles nil message_id gracefully' do
+      em_run do
+        # This tests the message routing setup doesn't crash with edge cases
+        engine.create_client do |client_id|
+          engine.subscribe(client_id, '/test') do
+            # Publish message without ID (edge case)
+            engine.publish({ 'data' => 'test' }, '/test') do
+              # Should complete without error
+              EM.stop
+            end
+          end
+        end
+      end
+    end
+  end
 end

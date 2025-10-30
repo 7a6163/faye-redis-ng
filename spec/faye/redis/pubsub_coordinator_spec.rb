@@ -221,6 +221,26 @@ RSpec.describe Faye::Redis::PubSubCoordinator do
         end
       end
     end
+
+    it 'resets reconnect counter on disconnect' do
+      em_run(2) do
+        options = test_redis_options.merge(
+          pubsub_max_reconnect_attempts: 2,
+          pubsub_reconnect_delay: 0.1
+        )
+        coordinator = described_class.new(connection, options)
+
+        # Simulate some reconnect attempts
+        coordinator.instance_variable_set(:@reconnect_attempts, 3)
+        expect(coordinator.instance_variable_get(:@reconnect_attempts)).to eq(3)
+
+        # Disconnect should reset counter
+        coordinator.disconnect
+        expect(coordinator.instance_variable_get(:@reconnect_attempts)).to eq(0)
+
+        EM.stop
+      end
+    end
   end
 
   describe 'message handling' do

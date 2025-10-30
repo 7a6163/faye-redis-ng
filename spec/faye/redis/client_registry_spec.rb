@@ -315,5 +315,97 @@ RSpec.describe Faye::Redis::ClientRegistry do
         end
       end
     end
+
+    it 'handles rebuild_clients_index errors gracefully' do
+      em_run do
+        # Disconnect to cause error during rebuild
+        connection.disconnect
+
+        # Should handle error gracefully
+        expect {
+          registry.send(:rebuild_clients_index)
+        }.not_to raise_error
+
+        EM.stop
+      end
+    end
+  end
+
+  describe 'index rebuild (v1.0.9)' do
+    it 'rebuilds clients index periodically' do
+      em_run do
+        # Create some clients
+        registry.create('client-1') do
+          registry.create('client-2') do
+            # Set cleanup counter to 9, next cleanup will trigger rebuild (at 10)
+            registry.instance_variable_set(:@cleanup_counter, 9)
+
+            # Trigger cleanup which should increment to 10 and rebuild
+            registry.cleanup_expired do
+              # After rebuild, cleanup_counter should reset to 0
+              expect(registry.instance_variable_get(:@cleanup_counter)).to eq(0)
+
+              # Verify clients are still in index after rebuild
+              registry.all do |clients|
+                expect(clients).to include('client-1')
+                expect(clients).to include('client-2')
+                EM.stop
+              end
+            end
+          end
+        end
+      end
+    end
+
+    it 'skips index rebuild when counter below threshold' do
+      em_run do
+        registry.create('client-1') do
+          # Set counter below threshold
+          registry.instance_variable_set(:@cleanup_counter, 5)
+          initial_counter = 5
+
+          registry.cleanup_expired do
+            # Counter should increment, not reset
+            expect(registry.instance_variable_get(:@cleanup_counter)).to eq(initial_counter + 1)
+            EM.stop
+          end
+        end
+      end
+    end
+
+    it 'handles rebuild with no clients' do
+      em_run do
+        # Trigger rebuild with empty database
+        expect {
+          registry.send(:rebuild_clients_index)
+        }.not_to raise_error
+
+        EM.stop
+      end
+    end
+
+    it 'handles rebuild with many clients' do
+      em_run(2) do
+        clients = (1..30).map { |i| "client-#{i}" }
+        create_count = 0
+
+        clients.each do |client_id|
+          registry.create(client_id) do
+            create_count += 1
+
+            if create_count == clients.size
+              # Trigger rebuild
+              registry.send(:rebuild_clients_index)
+
+              # Verify all clients in index
+              registry.all do |all_clients|
+                expect(all_clients.size).to eq(clients.size)
+                EM.stop
+              end
+            end
+          end
+        end
+      end
+    end
   end
 end

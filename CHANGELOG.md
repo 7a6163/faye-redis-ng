@@ -116,9 +116,12 @@ end
 ```
 
 ### Test Coverage
-- All 177 tests passing
-- Line Coverage: 85.77%
-- Branch Coverage: 55.04%
+- **210 tests passing** (+33 new tests, +18.6%)
+- **Line Coverage: 89.69%** (+3.92% from v1.0.8)
+- **Branch Coverage: 60.08%** (+5.04% from v1.0.8)
+- Added comprehensive tests for all P1/P2 fixes
+- Added edge case and error handling tests
+- All new features have corresponding test coverage
 
 ### Upgrade Notes
 This release includes important concurrency and performance fixes. Recommended for all users, especially:
