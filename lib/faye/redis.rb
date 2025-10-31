@@ -25,7 +25,7 @@ module Faye
       retry_delay: 1,
       client_timeout: 60,
       message_ttl: 3600,
-      subscription_ttl: 86400,  # Subscription keys TTL (24 hours), provides safety net if GC fails
+      subscription_ttl: 300,  # Subscription keys TTL (5 minutes = 5x client_timeout), provides safety net if GC fails
       namespace: 'faye',
       gc_interval: 60,  # Automatic garbage collection interval (seconds), set to 0 or false to disable
       cleanup_batch_size: 50  # Number of items per batch during cleanup (min: 1, max: 1000, prevents blocking)

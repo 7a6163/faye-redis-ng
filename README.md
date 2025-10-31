@@ -80,6 +80,7 @@ bayeux = Faye::RackAdapter.new(app, {
   # Data expiration
   client_timeout: 60,         # Client session timeout (seconds)
   message_ttl: 3600,          # Message TTL (seconds)
+  subscription_ttl: 300,      # Subscription keys TTL (seconds, default: 5 minutes)
 
   # Garbage collection
   gc_interval: 60,            # Automatic GC interval (seconds), set to 0 or false to disable

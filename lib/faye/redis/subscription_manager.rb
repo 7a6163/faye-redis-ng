@@ -12,7 +12,7 @@ module Faye
       # Subscribe a client to a channel
       def subscribe(client_id, channel, &callback)
         timestamp = Time.now.to_i
-        subscription_ttl = @options[:subscription_ttl] || 86400  # 24 hours default
+        subscription_ttl = @options[:subscription_ttl] || 300  # 5 minutes default (5x client_timeout)
 
         client_subs_key = client_subscriptions_key(client_id)
         channel_subs_key = channel_subscribers_key(channel)
