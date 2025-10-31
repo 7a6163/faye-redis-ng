@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.13] - 2025-11-01
+
+### Added - Ping-Based Subscription TTL Refresh
+- **Subscription TTLs now refresh on every ping**: Keeps subscriptions alive as long as client is connected
+  - **New behavior**: Each client ping (every ~25s) now refreshes all subscription-related TTLs
+  - **Implementation**:
+    - Added `SubscriptionManager#refresh_client_subscriptions_ttl` method
+    - Modified `Redis#ping` to call subscription TTL refresh
+    - Uses pipelined Redis commands for efficient batch TTL updates
+  - **Impact**:
+    - ✅ Active clients: Subscriptions never expire while connected
+    - ✅ Inactive clients: Subscriptions expire 1 hour after last ping (as expected)
+    - ✅ Long-lived connections: Chat rooms, dashboards work indefinitely
+    - ✅ Prevents silent subscription expiration for active clients
+  - **Before**: Subscriptions expired after 1 hour even for active clients
+  - **After**: Subscriptions only expire 1 hour after client disconnects
+  - **Performance**: Minimal impact - uses single pipelined Redis call per ping
+
+### Design Decision - Message Queue TTL Not Refreshed
+- **Message queue TTL remains fixed at 1 hour**: Does not refresh on ping
+  - **Rationale**:
+    - Active clients: Messages are immediately delivered, queue is usually empty
+    - Empty queues that expire are automatically recreated when needed
+    - Inactive clients: 1-hour TTL provides sufficient buffer for reconnection
+    - Memory efficiency: Prevents permanent empty queue keys for long-lived connections
+  - **Trade-offs**:
+    - ✅ Better memory efficiency: Empty queues expire after 1 hour
+    - ✅ No functional impact: Messages still delivered normally to active clients
+    - ✅ Automatic cleanup: Long-term disconnected clients don't accumulate messages indefinitely
+  - **Behavior**:
+    - Active client: Queue may expire, but recreates automatically on next message
+    - Disconnected < 1 hour: All messages preserved for reconnection
+    - Disconnected > 1 hour: Messages cleared to prevent unbounded growth
+
+### Notes
+- Ping-based refresh ensures long-lived connections (chat, real-time dashboards) work correctly
+- Message queue strategy balances reliability with memory efficiency
+- The 1-hour TTL provides ample buffer (60 GC cycles) for cleanup after disconnect
+
 ## [1.0.12] - 2025-11-01
 
 ### Changed - Aligned Subscription TTL with Message TTL
@@ -32,11 +71,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `{namespace}:patterns` (SET)
   - **Backward compatibility**: Users can still override with custom `subscription_ttl` option
 
+### Added - Ping-Based Subscription TTL Refresh
+- **Subscription TTLs now refresh on every ping**: Keeps subscriptions alive as long as client is connected
+  - **New behavior**: Each client ping (every ~25s) now refreshes all subscription-related TTLs
+  - **Implementation**:
+    - Added `SubscriptionManager#refresh_client_subscriptions_ttl` method
+    - Modified `Redis#ping` to call subscription TTL refresh
+    - Uses pipelined Redis commands for efficient batch TTL updates
+  - **Impact**:
+    - ✅ Active clients: Subscriptions never expire while connected
+    - ✅ Inactive clients: Subscriptions expire 1 hour after last ping (as expected)
+    - ✅ Long-lived connections: Chat rooms, dashboards work indefinitely
+    - ✅ Prevents silent subscription expiration for active clients
+  - **Before**: Subscriptions expired after 1 hour even for active clients
+  - **After**: Subscriptions only expire 1 hour after client disconnects
+  - **Performance**: Minimal impact - uses single pipelined Redis call per ping
+
 ### Notes
 - This change ensures subscriptions don't expire before their associated messages
-- The 1-hour TTL provides ample buffer (60 GC cycles) for cleanup
+- The 1-hour TTL provides ample buffer (60 GC cycles) for cleanup after disconnect
 - TTL-safe implementation (v1.0.10) ensures active subscriptions maintain their original TTL
 - Conservative approach: prioritizes message delivery over aggressive memory optimization
+- Ping-based refresh ensures long-lived connections (chat, real-time dashboards) work correctly
 
 ## [1.0.11] - 2025-10-31
 

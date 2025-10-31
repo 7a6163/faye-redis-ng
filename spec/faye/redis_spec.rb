@@ -162,6 +162,58 @@ RSpec.describe Faye::Redis do
         end
       end
     end
+
+    it 'refreshes subscription TTL on ping' do
+      em_run(3) do
+        engine.create_client do |client_id|
+          namespace = engine.options[:namespace]
+
+          engine.subscribe(client_id, '/test/channel') do
+            # Wait a bit to let TTL decrease
+            EM.add_timer(2) do
+              engine.ping(client_id)
+
+              # Check TTL after ping - should be refreshed to near subscription_ttl
+              EM.add_timer(0.1) do
+                engine.connection.with_redis do |redis|
+                  refreshed_ttl = redis.ttl("#{namespace}:subscriptions:#{client_id}")
+                  # TTL should be close to subscription_ttl (3600) after refresh
+                  expect(refreshed_ttl).to be_within(10).of(engine.options[:subscription_ttl])
+                  expect(refreshed_ttl).to be > 3590  # Should be nearly full TTL
+                  EM.stop
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+
+    it 'refreshes channel subscriber TTL on ping' do
+      em_run(3) do
+        engine.create_client do |client_id|
+          namespace = engine.options[:namespace]
+          channel = '/test/refresh'
+
+          engine.subscribe(client_id, channel) do
+            # Wait to let TTL decrease
+            EM.add_timer(2) do
+              engine.ping(client_id)
+
+              # Check TTL after ping
+              EM.add_timer(0.1) do
+                engine.connection.with_redis do |redis|
+                  refreshed_ttl = redis.ttl("#{namespace}:channels:#{channel}")
+                  expect(refreshed_ttl).to be_within(10).of(engine.options[:subscription_ttl])
+                  expect(refreshed_ttl).to be > 3590  # Should be nearly full TTL
+                  EM.stop
+                end
+              end
+            end
+          end
+        end
+      end
+    end
   end
 
   describe '#subscribe' do

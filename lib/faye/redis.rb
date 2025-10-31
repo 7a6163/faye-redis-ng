@@ -88,8 +88,10 @@ module Faye
     end
 
     # Ping a client to keep it alive
+    # Also refreshes subscription TTLs to keep them alive while client is connected
     def ping(client_id)
       @client_registry.ping(client_id)
+      @subscription_manager.refresh_client_subscriptions_ttl(client_id)
     end
 
     # Subscribe a client to a channel

@@ -118,6 +118,35 @@ module Faye
         EventMachine.next_tick { callback.call(false) } if callback
       end
 
+      # Refresh TTL for all subscription keys related to a client
+      # Called during ping to keep subscriptions alive as long as client is connected
+      def refresh_client_subscriptions_ttl(client_id)
+        subscription_ttl = @options[:subscription_ttl] || 3600
+
+        @connection.with_redis do |redis|
+          # Get all channels this client is subscribed to
+          channels = redis.smembers(client_subscriptions_key(client_id))
+          return if channels.empty?
+
+          # Use pipeline to refresh all TTLs efficiently
+          redis.pipelined do |pipeline|
+            # Refresh client's subscriptions set
+            pipeline.expire(client_subscriptions_key(client_id), subscription_ttl)
+
+            # Refresh each subscription metadata and channel subscriber set
+            channels.each do |channel|
+              pipeline.expire(subscription_key(client_id, channel), subscription_ttl)
+              pipeline.expire(channel_subscribers_key(channel), subscription_ttl)
+            end
+
+            # Refresh patterns set if it exists
+            pipeline.expire(patterns_key, subscription_ttl)
+          end
+        end
+      rescue => e
+        log_error("Failed to refresh subscription TTL for client #{client_id}: #{e.message}")
+      end
+
       # Get all channels a client is subscribed to
       def get_client_subscriptions(client_id, &callback)
         channels = @connection.with_redis do |redis|
