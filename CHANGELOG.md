@@ -7,18 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.11] - 2025-10-31
+## [1.0.12] - 2025-11-01
 
-### Changed - Optimized Subscription TTL
-- **Reduced subscription_ttl from 24 hours to 5 minutes**: More aggressive cleanup of orphaned subscription data
-  - **Previous**: `subscription_ttl: 86400` (24 hours)
-  - **New**: `subscription_ttl: 300` (5 minutes = 5x client_timeout)
-  - **Rationale**: Client keys expire after 60 seconds, keeping subscription data for 24 hours was excessive
-  - **Impact**: Faster memory reclamation for disconnected clients while maintaining safety net
-  - **Benefits**:
-    - Reduces memory footprint by cleaning up orphaned subscriptions faster
-    - Maintains 5-minute safety window (5 GC cycles) for proper cleanup
-    - Allows short-lived reconnections within 5 minutes to reuse subscription data
+### Changed - Aligned Subscription TTL with Message TTL
+- **Adjusted subscription_ttl to 1 hour**: Match message_ttl to prevent message loss window
+  - **Previous (v1.0.11)**: `subscription_ttl: 300` (5 minutes)
+  - **New**: `subscription_ttl: 3600` (1 hour, same as message_ttl)
+  - **Rationale**:
+    - Subscription and message TTL must be aligned to prevent message loss window
+    - If subscription expires before messages, new messages won't be enqueued for disconnected clients
+    - Example: If subscription expires at 5 minutes but messages persist for 1 hour, any new messages after 5 minutes won't reach the client even if they reconnect within 1 hour
+  - **Impact**:
+    - Prevents message loss: disconnected clients get all messages within 1-hour window
+    - No TTL gap: subscriptions and messages expire together
+    - Conservative approach for reliable message delivery
+  - **Trade-offs**:
+    - Uses more memory than 5-minute TTL (but still 96% less than original 24 hours)
+    - 1-hour reconnection window is sufficient for most mobile/network interruptions
+    - Maintains 60x safety buffer (60 GC cycles @ 60s interval) for proper cleanup
   - **Affected keys**:
     - `{namespace}:subscriptions:{client_id}` (SET)
     - `{namespace}:channels:{channel}` (SET)
@@ -27,9 +33,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Backward compatibility**: Users can still override with custom `subscription_ttl` option
 
 ### Notes
-- This change is safe because automatic GC runs every 60 seconds by default
-- The 5-minute TTL provides sufficient buffer (5 GC cycles) for cleanup
+- This change ensures subscriptions don't expire before their associated messages
+- The 1-hour TTL provides ample buffer (60 GC cycles) for cleanup
 - TTL-safe implementation (v1.0.10) ensures active subscriptions maintain their original TTL
+- Conservative approach: prioritizes message delivery over aggressive memory optimization
+
+## [1.0.11] - 2025-10-31
+
+### Changed - Reduced Subscription TTL (Reverted in v1.0.12)
+- **Reduced subscription_ttl from 24 hours to 5 minutes**: More aggressive cleanup of orphaned subscription data
+  - **Previous**: `subscription_ttl: 86400` (24 hours)
+  - **New**: `subscription_ttl: 300` (5 minutes = 5x client_timeout)
+  - **Issue discovered**: This created a message loss window - subscriptions expired in 5 minutes but messages persisted for 1 hour
+  - **Resolution**: Reverted in v1.0.12 to align with message_ttl (1 hour)
 
 ## [1.0.10] - 2025-10-30
 
