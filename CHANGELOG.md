@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.14] - 2025-11-06
+
+### Fixed
+- **Redis 5.0 Deprecation Warnings**: Updated Redis gem method calls to use predicate versions
+  - Changed `srem` to `srem?` in `SubscriptionManager#cleanup_orphaned_subscriptions_batched` (subscription_manager.rb:334)
+  - Changed `sadd` to `sadd?` in `ClientRegistry#rebuild_clients_index` (client_registry.rb:223)
+  - **Impact**: Eliminates deprecation warnings when using Redis gem 5.0+
+  - **Rationale**: Predicate versions (`srem?`, `sadd?`) are more semantic when return values aren't used
+  - **Compatibility**: Fully compatible with Redis gem 4.0+ and 5.0+
+
+### Notes
+- No functional changes - purely addressing deprecation warnings
+- Drop-in replacement for v1.0.13
+
 ## [1.0.13] - 2025-11-01
 
 ### Added - Ping-Based Subscription TTL Refresh
@@ -548,7 +562,14 @@ For 100 subscribers receiving one message:
 ### Security
 - Client and message IDs now use `SecureRandom.uuid` instead of predictable time-based generation
 
-[Unreleased]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.7...HEAD
+[Unreleased]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.14...HEAD
+[1.0.14]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.13...v1.0.14
+[1.0.13]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.12...v1.0.13
+[1.0.12]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.11...v1.0.12
+[1.0.11]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.10...v1.0.11
+[1.0.10]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.9...v1.0.10
+[1.0.9]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.8...v1.0.9
+[1.0.8]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.7...v1.0.8
 [1.0.7]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.6...v1.0.7
 [1.0.6]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/7a6163/faye-redis-ng/compare/v1.0.4...v1.0.5

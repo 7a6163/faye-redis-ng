@@ -212,7 +212,7 @@ gem build faye-redis-ng.gemspec
 ### Installing Locally
 
 ```bash
-gem install ./faye-redis-ng-0.1.0.gem
+gem install ./faye-redis-ng-1.0.14.gem
 ```
 
 ### Releasing to RubyGems
@@ -224,8 +224,8 @@ This project uses GitHub Actions for automated releases. To publish a new versio
 3. Create and push a git tag:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v1.0.14
+git push origin v1.0.14
 ```
 
 The CI/CD pipeline will automatically:
@@ -236,7 +236,7 @@ The CI/CD pipeline will automatically:
 
 **Prerequisites:**
 - Add `RUBYGEMS_API_KEY` to GitHub repository secrets
-- The tag must start with 'v' (e.g., v0.1.0, v1.2.3)
+- The tag must start with 'v' (e.g., v1.0.14, v1.2.3)
 
 ## Memory Management
 

@@ -220,7 +220,7 @@ module Faye
           # Rebuild index atomically
           redis.multi do |multi|
             multi.del(index_key)
-            active_client_ids.each { |id| multi.sadd(index_key, id) } if active_client_ids.any?
+            active_client_ids.each { |id| multi.sadd?(index_key, id) } if active_client_ids.any?
           end
 
           puts "[Faye::Redis::ClientRegistry] INFO: Rebuilt clients index with #{active_client_ids.size} active clients" if @options[:log_level] != :silent

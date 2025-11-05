@@ -331,7 +331,7 @@ module Faye
 
                 channels.each do |channel|
                   pipeline.del(subscription_key(client_id, channel))
-                  pipeline.srem(channel_subscribers_key(channel), client_id)
+                  pipeline.srem?(channel_subscribers_key(channel), client_id)
                 end
 
                 pipeline.del("#{namespace}:messages:#{client_id}")
